@@ -132,9 +132,45 @@ def _strip_prefix(path: str, prefix: str) -> str:
     return path[len(prefix) :] if path.startswith(prefix) else path
 
 
+_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _read_quoted(text: str) -> tuple[str, str]:
+    """Decode a C-style quoted path at the start of ``text`` (git's ``core.quotePath`` form).
+
+    Returns the decoded path and the rest of ``text`` after the closing quote. Octal escapes are bytes, so
+    ``"caf\\303\\251"`` decodes as UTF-8 to ``café``.
+    """
+    out = bytearray()
+    i = 1
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            return out.decode("utf-8", errors="replace"), text[i + 1 :]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in _ESCAPES:
+                out.append(_ESCAPES[nxt])
+                i += 2
+                continue
+            if text[i + 1 : i + 4].isdigit() and len(text[i + 1 : i + 4]) == 3:
+                out.append(int(text[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+        out.extend(ch.encode("utf-8"))
+        i += 1
+    raise ValueError(f"unterminated quoted path: {text!r}")
+
+
+def _maybe_unquote(path: str) -> str:
+    return _read_quoted(path)[0] if path.startswith('"') else path
+
+
 def _file_header_path(rest: str, prefix: str) -> str | None:
     """The path from a ``---``/``+++`` line (``rest`` excludes the marker); ``None`` for /dev/null."""
-    path = rest.split("\t", 1)[0]
+    if rest.startswith('"'):
+        return _strip_prefix(_read_quoted(rest)[0], prefix)
+    path = rest.split("\t", 1)[0]  # plain diff -u appends a tab and a timestamp
     if path == "/dev/null":
         return None
     return _strip_prefix(path, prefix)
@@ -146,6 +182,13 @@ def _split_git_header(rest: str) -> tuple[str | None, str | None]:
     With unquoted paths containing spaces the split is only certain when both halves name the same path, so
     other sources (rename lines, ``---``/``+++``) take precedence; see DESIGN.md, "Path resolution".
     """
+    if rest.startswith('"'):
+        old, tail = _read_quoted(rest)
+        new = _maybe_unquote(tail.lstrip(" "))
+        return _strip_prefix(old, "a/"), _strip_prefix(new, "b/")
+    if rest.endswith('"') and ' "' in rest:
+        old, quoted_new = rest.rsplit(' "', 1)
+        return _strip_prefix(old, "a/"), _strip_prefix(_read_quoted('"' + quoted_new)[0], "b/")
     if len(rest) % 2 == 1:
         mid = len(rest) // 2
         old, new = rest[:mid], rest[mid + 1 :]
@@ -159,7 +202,13 @@ def _split_git_header(rest: str) -> tuple[str | None, str | None]:
 
 class _Parser:
     def __init__(self, text: str) -> None:
-        self.lines = text.splitlines()
+        # Split on "\n" only: str.splitlines() would also break on form feeds and other characters that
+        # legitimately appear inside source lines. A CRLF diff keeps "\r" out of headers and paths.
+        self.lines = text.split("\n")
+        if self.lines and self.lines[-1] == "":
+            self.lines.pop()
+        if self.lines and all(line.endswith("\r") for line in self.lines):
+            self.lines = [line[:-1] for line in self.lines]
         self.i = 0
         self.patch = PatchSet()
 
@@ -196,7 +245,10 @@ class _Parser:
         self.parse_hunks(file)
 
     def parse_git_file(self) -> None:
-        header_old, header_new = _split_git_header(self.lines[self.i][len("diff --git ") :])
+        try:
+            header_old, header_new = _split_git_header(self.lines[self.i][len("diff --git ") :])
+        except ValueError as exc:
+            raise self.error(str(exc)) from None
         self.i += 1
         file = FileDiff(header_old, header_new)
         rename_from = rename_to = None
@@ -212,10 +264,10 @@ class _Parser:
             elif line.startswith(("similarity index ", "dissimilarity index ")):
                 file.similarity = int(line.rsplit(" ", 1)[1].rstrip("%"))
             elif line.startswith(("rename from ", "copy from ")):
-                rename_from = line.split(" ", 2)[2]
+                rename_from = _maybe_unquote(line.split(" ", 2)[2])
                 file.status = FileStatus.RENAMED if line.startswith("rename") else FileStatus.COPIED
             elif line.startswith(("rename to ", "copy to ")):
-                rename_to = line.split(" ", 2)[2]
+                rename_to = _maybe_unquote(line.split(" ", 2)[2])
             elif line.startswith("index "):
                 pass
             elif line.startswith("Binary files ") or line == "GIT binary patch":
@@ -248,14 +300,19 @@ class _Parser:
         self.parse_hunks(file)
 
     def read_file_headers(self, file: FileDiff) -> None:
-        old_line = self.lines[self.i]
+        file.old_path = self.header_path(self.lines[self.i][4:], "a/")
         self.i += 1
         new_line = self.peek()
         if new_line is None or not new_line.startswith("+++ "):
             raise self.error("expected '+++' after '---'")
+        file.new_path = self.header_path(new_line[4:], "b/")
         self.i += 1
-        file.old_path = _file_header_path(old_line[4:], "a/")
-        file.new_path = _file_header_path(new_line[4:], "b/")
+
+    def header_path(self, rest: str, prefix: str) -> str | None:
+        try:
+            return _file_header_path(rest, prefix)
+        except ValueError as exc:
+            raise self.error(str(exc)) from None
 
     def parse_hunks(self, file: FileDiff) -> None:
         position = 0
