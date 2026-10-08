@@ -19,6 +19,7 @@ __all__ = [
     "Hunk",
     "LineKind",
     "PatchSet",
+    "Side",
     "parse_hunk_header",
     "parse_patch",
 ]
@@ -38,6 +39,13 @@ class FileStatus(Enum):
     MODIFIED = "modified"
     RENAMED = "renamed"
     COPIED = "copied"
+
+
+class Side(Enum):
+    """Which file version a review comment refers to, as GitHub's Reviews API names them."""
+
+    LEFT = "LEFT"  # old file: removed and context lines
+    RIGHT = "RIGHT"  # new file: added and context lines
 
 
 class LineKind(Enum):
@@ -66,6 +74,23 @@ class Hunk:
     section: str = ""
     lines: list[DiffLine] = field(default_factory=list)
 
+    @property
+    def header(self) -> str:
+        section = f" {self.section}" if self.section else ""
+        return f"@@ -{self.old_start},{self.old_count} +{self.new_start},{self.new_count} @@{section}"
+
+    def render_numbered(self) -> str:
+        """The hunk as diff text with new-file line numbers in a left margin, for prompts.
+
+        Removed lines have a blank margin, so a model citing a number always cites a new-file (RIGHT) line.
+        """
+        width = len(str(self.new_start + self.new_count))
+        out = [self.header]
+        for line in self.lines:
+            margin = str(line.new_lineno).rjust(width) if line.new_lineno is not None else " " * width
+            out.append(f"{margin} {line.kind.value}{line.content}")
+        return "\n".join(out)
+
 
 @dataclass
 class FileDiff:
@@ -91,6 +116,37 @@ class FileDiff:
     def lines(self) -> Iterator[DiffLine]:
         for hunk in self.hunks:
             yield from hunk.lines
+
+    def anchor(self, line: int, side: Side = Side.RIGHT) -> DiffLine | None:
+        """The diff line a review comment at ``(line, side)`` would attach to, or ``None``.
+
+        GitHub only accepts comments on lines shown in a hunk (context included). CodeLens drops findings that
+        don't anchor rather than moving them; see DESIGN.md, "Line mapping".
+        """
+        for diff_line in self.lines():
+            number = diff_line.new_lineno if side is Side.RIGHT else diff_line.old_lineno
+            if number == line:
+                return diff_line
+        return None
+
+    def commentable_lines(self, side: Side = Side.RIGHT) -> set[int]:
+        """Every line number on ``side`` that :meth:`anchor` accepts."""
+        attr = "new_lineno" if side is Side.RIGHT else "old_lineno"
+        return {n for ln in self.lines() if (n := getattr(ln, attr)) is not None}
+
+    def added_lines(self) -> list[int]:
+        """New-file line numbers of added lines, ascending."""
+        return [ln.new_lineno for ln in self.lines() if ln.kind is LineKind.ADDED and ln.new_lineno]
+
+    def changed_ranges(self) -> list[tuple[int, int]]:
+        """Added lines collapsed into inclusive ``(first, last)`` new-file ranges."""
+        ranges: list[tuple[int, int]] = []
+        for n in self.added_lines():
+            if ranges and ranges[-1][1] == n - 1:
+                ranges[-1] = (ranges[-1][0], n)
+            else:
+                ranges.append((n, n))
+        return ranges
 
 
 @dataclass
