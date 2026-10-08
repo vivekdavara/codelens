@@ -1,0 +1,2 @@
+# Diff fixtures are byte-exact git output (trailing tabs, no EOL conversion).
+tests/fixtures/*.diff -text

@@ -1,0 +1,55 @@
+diff --git a/added.txt b/added.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1 @@
++new
+diff --git a/dir with space/a file.txt b/dir with space/a file.txt
+new file mode 100644
+index 0000000..ce01362
+--- /dev/null
++++ b/dir with space/a file.txt	
+@@ -0,0 +1 @@
++hello
+diff --git a/empty.txt b/empty.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index 587be6b..0000000
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-x
+diff --git a/img.bin b/img.bin
+index 8352675..c5793f9 100644
+Binary files a/img.bin and b/img.bin differ
+diff --git a/keep.txt b/keep.txt
+index b00a0f1..be0cc06 100644
+--- a/keep.txt
++++ b/keep.txt
+@@ -1,6 +1,6 @@
+ one
+ two
+-three
++THREE
+ four
+ five
+ six
+diff --git a/old_name.py b/new_name.py
+similarity index 73%
+rename from old_name.py
+rename to new_name.py
+index 7a28df3..adc7e54 100644
+--- a/old_name.py
++++ b/new_name.py
+@@ -1,4 +1,4 @@
+ alpha
+ beta
+ gamma
+-delta
++DELTA
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755

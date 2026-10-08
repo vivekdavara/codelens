@@ -15,6 +15,7 @@ __all__ = [
     "DiffLine",
     "DiffParseError",
     "FileDiff",
+    "FileStatus",
     "Hunk",
     "LineKind",
     "PatchSet",
@@ -29,6 +30,14 @@ class DiffParseError(ValueError):
     def __init__(self, message: str, lineno: int) -> None:
         super().__init__(f"line {lineno}: {message}")
         self.lineno = lineno
+
+
+class FileStatus(Enum):
+    ADDED = "added"
+    DELETED = "deleted"
+    MODIFIED = "modified"
+    RENAMED = "renamed"
+    COPIED = "copied"
 
 
 class LineKind(Enum):
@@ -64,6 +73,12 @@ class FileDiff:
     """``None`` when the file is added (``--- /dev/null``)."""
     new_path: str | None
     """``None`` when the file is deleted (``+++ /dev/null``)."""
+    status: FileStatus = FileStatus.MODIFIED
+    old_mode: str | None = None
+    new_mode: str | None = None
+    similarity: int | None = None
+    """Percent from ``similarity index`` (renames/copies) or ``dissimilarity index`` (rewrites)."""
+    is_binary: bool = False
     hunks: list[Hunk] = field(default_factory=list)
 
     @property
@@ -125,6 +140,23 @@ def _file_header_path(rest: str, prefix: str) -> str | None:
     return _strip_prefix(path, prefix)
 
 
+def _split_git_header(rest: str) -> tuple[str | None, str | None]:
+    """Split ``a/<old> b/<new>`` from a ``diff --git`` line; ``(None, None)`` if ambiguous.
+
+    With unquoted paths containing spaces the split is only certain when both halves name the same path, so
+    other sources (rename lines, ``---``/``+++``) take precedence; see DESIGN.md, "Path resolution".
+    """
+    if len(rest) % 2 == 1:
+        mid = len(rest) // 2
+        old, new = rest[:mid], rest[mid + 1 :]
+        if old.startswith("a/") and new.startswith("b/") and old[2:] == new[2:]:
+            return old[2:], new[2:]
+    if rest.startswith("a/") and rest.count(" b/") == 1:
+        old, new = rest.split(" b/")
+        return old[2:], new
+    return None, None
+
+
 class _Parser:
     def __init__(self, text: str) -> None:
         self.lines = text.splitlines()
@@ -142,7 +174,7 @@ class _Parser:
             if line.startswith("diff --git "):
                 self.parse_git_file()
             elif line.startswith("--- "):
-                self.parse_file_headers(FileDiff(None, None))
+                self.parse_plain_file()
             elif line.startswith("@@"):
                 raise self.error("hunk before any file header")
             else:
@@ -150,19 +182,72 @@ class _Parser:
                 self.i += 1
         return self.patch
 
-    def parse_git_file(self) -> None:
-        self.i += 1
+    def parse_plain_file(self) -> None:
         file = FileDiff(None, None)
-        while (line := self.peek()) is not None and not line.startswith(("--- ", "diff --git ")):
-            if line.startswith("@@"):
-                raise self.error("hunk without ---/+++ file headers")
-            self.i += 1
-        if line is not None and line.startswith("--- "):
-            self.parse_file_headers(file)
-        else:
-            self.patch.files.append(file)
+        self.read_file_headers(file)
+        file.status = (
+            FileStatus.ADDED
+            if file.old_path is None
+            else FileStatus.DELETED
+            if file.new_path is None
+            else FileStatus.MODIFIED
+        )
+        self.patch.files.append(file)
+        self.parse_hunks(file)
 
-    def parse_file_headers(self, file: FileDiff) -> None:
+    def parse_git_file(self) -> None:
+        header_old, header_new = _split_git_header(self.lines[self.i][len("diff --git ") :])
+        self.i += 1
+        file = FileDiff(header_old, header_new)
+        rename_from = rename_to = None
+        while (line := self.peek()) is not None:
+            if line.startswith(("old mode ", "deleted file mode ")):
+                file.old_mode = line.rsplit(" ", 1)[1]
+                if line.startswith("deleted"):
+                    file.status = FileStatus.DELETED
+            elif line.startswith(("new mode ", "new file mode ")):
+                file.new_mode = line.rsplit(" ", 1)[1]
+                if line.startswith("new file"):
+                    file.status = FileStatus.ADDED
+            elif line.startswith(("similarity index ", "dissimilarity index ")):
+                file.similarity = int(line.rsplit(" ", 1)[1].rstrip("%"))
+            elif line.startswith(("rename from ", "copy from ")):
+                rename_from = line.split(" ", 2)[2]
+                file.status = FileStatus.RENAMED if line.startswith("rename") else FileStatus.COPIED
+            elif line.startswith(("rename to ", "copy to ")):
+                rename_to = line.split(" ", 2)[2]
+            elif line.startswith("index "):
+                pass
+            elif line.startswith("Binary files ") or line == "GIT binary patch":
+                file.is_binary = True
+                if line == "GIT binary patch":
+                    # Base85 literal/delta blocks run until the next file.
+                    while (nxt := self.peek()) is not None and not nxt.startswith("diff --git "):
+                        self.i += 1
+                    continue
+            elif line.startswith("@@"):
+                raise self.error("hunk without ---/+++ file headers")
+            else:
+                break  # '---', the next file, or trailing noise
+            self.i += 1
+
+        if (line := self.peek()) is not None and line.startswith("--- "):
+            self.read_file_headers(file)
+        # Path precedence: rename/copy lines, then ---/+++ (already applied), then the diff --git line.
+        if rename_from is not None:
+            file.old_path = rename_from
+        if rename_to is not None:
+            file.new_path = rename_to
+        if file.status is FileStatus.ADDED:
+            file.old_path = None
+        elif file.status is FileStatus.DELETED:
+            file.new_path = None
+        if file.old_path is None and file.new_path is None:
+            raise self.error("cannot determine the file path from 'diff --git' header")
+        self.patch.files.append(file)
+        self.parse_hunks(file)
+
+    def read_file_headers(self, file: FileDiff) -> None:
         old_line = self.lines[self.i]
         self.i += 1
         new_line = self.peek()
@@ -171,8 +256,6 @@ class _Parser:
         self.i += 1
         file.old_path = _file_header_path(old_line[4:], "a/")
         file.new_path = _file_header_path(new_line[4:], "b/")
-        self.patch.files.append(file)
-        self.parse_hunks(file)
 
     def parse_hunks(self, file: FileDiff) -> None:
         position = 0
