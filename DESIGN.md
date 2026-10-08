@@ -144,6 +144,7 @@ validation or anchoring is dropped and counted (the count is reported, so silent
 ```python
 class Provider(Protocol):
     name: str
+
     def complete(self, system: str, prompt: str) -> str: ...
 ```
 
