@@ -1,0 +1,80 @@
+name: CodeLens
+description: LLM pull-request reviewer and test generator (recorded provider by default; live LLM opt-in).
+author: Vivek Davara
+branding:
+  icon: eye
+  color: blue
+
+# Day 1: the action fetches the pull request's diff, parses it, and writes the reviewable lines to the job
+# summary. Review comments (day 2) and test generation (day 4) build on the same steps.
+#
+# Security: every ${{ }} value reaches the shell through env, never interpolated into a script, so a branch
+# name or input can't inject commands. Run this on `pull_request`, not `pull_request_target`.
+
+inputs:
+  github-token:
+    description: Token used to read the pull request diff (needs pull-requests read).
+    default: ${{ github.token }}
+  diff-file:
+    description: Review this diff file instead of fetching the pull request's diff (for local runs and tests).
+    default: ""
+  python-version:
+    description: Python used to run CodeLens.
+    default: "3.11"
+
+outputs:
+  diff-file:
+    description: Path of the diff that was parsed.
+    value: ${{ steps.diff.outputs.path }}
+  files:
+    description: Number of files in the diff.
+    value: ${{ steps.summary.outputs.files }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install CodeLens
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python -m pip install --quiet "$ACTION_PATH"
+
+    - name: Get the diff
+      id: diff
+      shell: bash
+      env:
+        DIFF_FILE: ${{ inputs.diff-file }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        if [ -n "$DIFF_FILE" ]; then
+          path="$DIFF_FILE"
+        elif [ -n "$PR_NUMBER" ]; then
+          path="$RUNNER_TEMP/codelens-pr-$PR_NUMBER.diff"
+          gh api "repos/$REPO/pulls/$PR_NUMBER" -H "Accept: application/vnd.github.diff" > "$path"
+        else
+          echo "::error::CodeLens needs a pull_request event or the diff-file input"
+          exit 1
+        fi
+        echo "path=$path" >> "$GITHUB_OUTPUT"
+
+    - name: Parse and summarise
+      id: summary
+      shell: bash
+      env:
+        DIFF_PATH: ${{ steps.diff.outputs.path }}
+      run: |
+        {
+          echo "### CodeLens: reviewable lines"
+          echo '```'
+          codelens diff "$DIFF_PATH"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        files=$(codelens diff --json "$DIFF_PATH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["files"]))')
+        echo "files=$files" >> "$GITHUB_OUTPUT"
+        codelens diff "$DIFF_PATH"

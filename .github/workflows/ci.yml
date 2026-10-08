@@ -25,3 +25,33 @@ jobs:
         run: mypy
       - name: Test
         run: pytest --cov --cov-report=term-missing
+
+  action:
+    # Runs the composite action from this checkout on a fixture diff, so action.yml is tested on every push.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - id: codelens
+        uses: ./
+        with:
+          diff-file: tests/fixtures/git_extended_headers.diff
+      - name: Check outputs
+        env:
+          FILES: ${{ steps.codelens.outputs.files }}
+          DIFF: ${{ steps.codelens.outputs.diff-file }}
+        run: |
+          test "$FILES" = "8" || { echo "expected 8 files, got '$FILES'"; exit 1; }
+          test "$DIFF" = "tests/fixtures/git_extended_headers.diff"
+
+  action-pr:
+    # On pull requests, the action fetches the PR's own diff through the API.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
