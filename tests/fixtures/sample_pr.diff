@@ -1,0 +1,41 @@
+diff --git a/shop/orders.py b/shop/orders.py
+index 24ceac1..a64a0ba 100644
+--- a/shop/orders.py
++++ b/shop/orders.py
+@@ -2,10 +2,21 @@
+ 
+ from decimal import Decimal
+ 
++DISCOUNTS = {"SPRING10": Decimal("0.10"), "VIP25": Decimal("0.25")}
++
+ 
+ def line_total(price: Decimal, quantity: int) -> Decimal:
+     return price * quantity
+ 
+ 
+-def order_total(lines: list[tuple[Decimal, int]]) -> Decimal:
+-    return sum((line_total(p, q) for p, q in lines), Decimal("0"))
++def order_total(lines: list[tuple[Decimal, int]], code: str | None = None) -> Decimal:
++    total = sum((line_total(p, q) for p, q in lines), Decimal("0"))
++    if code:
++        total -= total * DISCOUNTS[code]
++    return round(total, 2)
++
++
++def page(orders: list[dict], number: int, size: int = 20) -> list[dict]:
++    """Orders on page ``number`` (0-based)."""
++    start = number * size
++    return orders[start : start + size + 1]
+diff --git a/tests/test_orders.py b/tests/test_orders.py
+new file mode 100644
+index 0000000..0b8e464
+--- /dev/null
++++ b/tests/test_orders.py
+@@ -0,0 +1,7 @@
++from decimal import Decimal
++
++from shop.orders import order_total
++
++
++def test_discount_code() -> None:
++    assert order_total([(Decimal("10.00"), 2)], "SPRING10") == Decimal("18.00")

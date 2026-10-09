@@ -1,0 +1,44 @@
+{
+  "findings": [
+    {
+      "path": "shop/orders.py",
+      "line": 15,
+      "quote": "        total -= total * DISCOUNTS[code]",
+      "severity": "high",
+      "category": "bug",
+      "title": "An unknown discount code raises KeyError",
+      "body": "`DISCOUNTS[code]` raises `KeyError` for any code that is not in the table, so a mistyped code becomes a server error instead of a validation error. Look it up with `DISCOUNTS.get(code)` and reject unknown codes explicitly.",
+      "confidence": 0.9
+    },
+    {
+      "path": "shop/orders.py",
+      "line": 22,
+      "quote": "    return orders[start : start + size + 1]",
+      "severity": "medium",
+      "category": "bug",
+      "title": "Every page returns one order too many",
+      "body": "The slice ends at `start + size + 1`, so each page holds `size + 1` orders and the last order of one page is repeated as the first of the next. Use `orders[start : start + size]`.",
+      "confidence": 0.85
+    },
+    {
+      "path": "shop/orders.py",
+      "line": 16,
+      "quote": "        total -= total * DISCOUNTS[code]",
+      "severity": "low",
+      "category": "maintainability",
+      "title": "round() on a Decimal rounds half to even",
+      "body": "`round(total, 2)` uses the context's ROUND_HALF_EVEN, which may not be the rounding the business expects for money. Quantize with an explicit rounding mode.",
+      "confidence": 0.4
+    },
+    {
+      "path": "tests/test_orders.py",
+      "line": 7,
+      "quote": "    assert order_total([(Decimal(\"10.00\"), 2)], \"SPRING10\") == Decimal(\"18.00\")",
+      "severity": "low",
+      "category": "test",
+      "title": "No test for an unknown code or for pagination",
+      "body": "The new test covers only the happy path of a known code. Add cases for an unknown code and for `page()` boundaries, which would have caught both bugs above.",
+      "confidence": 0.7
+    }
+  ]
+}
