@@ -374,3 +374,20 @@ def test_paths_render_as_inline_code_that_cannot_break_out() -> None:
 def test_escaped_backticks_and_stray_fences_are_not_code() -> None:
     assert defang("Ask \\`@octocat\\` now") == "Ask \\`@\u2060octocat\\` now"
     assert defang("A literal ``` here.\n\n@octocat") == "A literal ``` here.\n\n@\u2060octocat"
+
+
+def test_a_huge_pr_keeps_the_review_body_under_githubs_limit() -> None:
+    skipped = [
+        (f"vendor/pkg{n}/very/long/path/to/a/generated/file_{n}.py", "binary file") for n in range(1500)
+    ]
+    for details in (None, "GitHub did not accept these as line comments, so they are listed here:"):
+        body = summary_body(a_review(*(finding(n) for n in range(1, 11)), skipped=skipped), details=details)
+        assert len(body) < 65_536
+        assert body.endswith(", and 1,480 more.")
+
+
+def test_the_body_cap_is_a_hard_limit() -> None:
+    long = finding(body="x" * 4000)
+    review = a_review(*([long] * 20))  # more than any review can hold today
+    body = summary_body(review, details="")
+    assert len(body) <= 60_000 + len("\n\n(truncated)") and body.endswith("(truncated)")

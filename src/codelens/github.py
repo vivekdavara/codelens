@@ -47,6 +47,10 @@ DEFAULT_AUTHOR = "github-actions[bot]"
 _MARKER = re.compile(r"<!-- codelens:([0-9a-f]{16}) -->")
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 MAX_PAGES = 10
+MAX_BODY_CHARS = 60_000
+"""GitHub refuses review and comment bodies over 65,536 characters; stay clear of it."""
+MAX_LISTED = 20
+"""Skipped files named in a summary; a huge PR can skip thousands, and the rest are counted instead."""
 """Pages of 100 read per listing when looking for earlier comments: 1,000 comments is plenty for one PR."""
 
 
@@ -160,11 +164,15 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     if review.repeated:
         notes.append(f"Not repeated: {review.repeated} finding(s) an earlier CodeLens review already posted.")
     if review.skipped:
-        skipped = ", ".join(f"{_path(path)} ({reason})" for path, reason in review.skipped)
-        notes.append(f"Not reviewed: {skipped}.")
+        skipped = ", ".join(f"{_path(path)} ({reason})" for path, reason in review.skipped[:MAX_LISTED])
+        rest = len(review.skipped) - MAX_LISTED
+        notes.append(f"Not reviewed: {skipped}" + (f", and {rest:,} more." if rest > 0 else "."))
     if notes:
         lines += ["", *notes]
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    if len(body) > MAX_BODY_CHARS:  # e.g. a high max-findings, written out in full: avoid GitHub's 422
+        body = body[:MAX_BODY_CHARS] + "\n\n(truncated)"
+    return body
 
 
 def review_payload(review: Review, commit_id: str | None = None, *, inline: bool = True) -> dict[str, Any]:
