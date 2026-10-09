@@ -285,7 +285,8 @@ def test_max_findings_caps_the_review(
     two = json.dumps(
         {"findings": [FINDING, {**FINDING, "line": 5, "quote": "return net", "severity": "low"}]}
     )
-    write_recording(recs, build_prompt(parse_patch(DIFF)).request, Completion(two, HAND_WRITTEN), "recorded")
+    request = build_prompt(parse_patch(DIFF), max_findings=1).request  # the prompt asks for the cap too
+    write_recording(recs, request, Completion(two, HAND_WRITTEN), "recorded")
     code, out, _ = run(capsys, "review", str(diff_file), "--recordings", str(recs), "--max-findings", "1")
     assert code == 0
     assert out.splitlines()[0].startswith("svc/pay.py:3  high")

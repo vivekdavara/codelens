@@ -62,7 +62,7 @@ def review(
     """
     if max_findings < 1 or max_prompt_chars < 1:
         raise ValueError("max_findings and max_prompt_chars must be positive")
-    prompt = build_prompt(patch, max_prompt_chars)
+    prompt = build_prompt(patch, max_prompt_chars, max_findings)  # the model is asked for the same cap
     result = Review(
         [], skipped=prompt.skipped, reviewed=[f.path for f in prompt.files], provider=provider.name
     )

@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     prompt = sub.add_parser("prompt", help="print the system prompt and user prompt a review would send")
     prompt.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
     prompt.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
+    prompt.add_argument("--max-findings", type=positive_int, default=MAX_FINDINGS)
 
     rev = sub.add_parser("review", help="review a diff and print the review (or post it with --post)")
     rev.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
@@ -142,7 +143,7 @@ def run_prompt(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     patch = read_patch(args.file, err)
     if patch is None:
         return 1
-    prompt = build_prompt(patch, args.max_prompt_chars)
+    prompt = build_prompt(patch, args.max_prompt_chars, args.max_findings)
     out.write(f"=== system ===\n{prompt.request.system}\n=== user ===\n{prompt.request.prompt}")
     out.write(f"=== key {prompt.request.key()} ===\n")
     for path, reason in prompt.skipped:

@@ -14,13 +14,20 @@ from codelens.diff import FileDiff, FileStatus, PatchSet
 from codelens.findings import FINDINGS_SCHEMA
 from codelens.providers import Request
 
-__all__ = ["DEFAULT_MAX_PROMPT_CHARS", "MAX_FINDINGS", "SYSTEM_PROMPT", "ReviewPrompt", "build_prompt"]
+__all__ = [
+    "DEFAULT_MAX_PROMPT_CHARS",
+    "MAX_FINDINGS",
+    "SYSTEM_PROMPT",
+    "ReviewPrompt",
+    "build_prompt",
+    "system_prompt",
+]
 
 MAX_FINDINGS = 10
 DEFAULT_MAX_PROMPT_CHARS = 200_000
 """Roughly 50K tokens at about 4 characters per token: room for most PRs, and a bound on one review's cost."""
 
-SYSTEM_PROMPT = "\n\n".join(
+_PARAGRAPHS = (  # the default text is the one the sample recording is keyed on; see system_prompt
     [
         "You are CodeLens, a careful senior engineer reviewing a pull request. You get the pull request's "
         'diff. Each hunk shows the new file\'s line number in the left margin, then a marker: "+" for an '
@@ -29,7 +36,7 @@ SYSTEM_PROMPT = "\n\n".join(
         "performance traps, maintainability hazards, and missing tests that matter. Do not comment on style, "
         "formatting or naming unless it causes a bug, and do not praise. If the change looks correct, return "
         "no findings. A few findings you are sure of are worth more than many guesses; report at most "
-        f"{MAX_FINDINGS}.",
+        "{max_findings}.",
         "For each finding give:\n"
         '- path: the file path exactly as written after "File:".\n'
         "- line: the number in the left margin of the line the problem is on. To flag a problem caused by a "
@@ -47,6 +54,14 @@ SYSTEM_PROMPT = "\n\n".join(
         'Answer with a JSON object of the form {"findings": [...]} and nothing else.',
     ]
 )
+
+
+def system_prompt(max_findings: int = MAX_FINDINGS) -> str:
+    """The fixed instructions, asking for at most ``max_findings`` findings: the cap the review applies."""
+    return "\n\n".join(_PARAGRAPHS).replace("{max_findings}", str(max_findings))
+
+
+SYSTEM_PROMPT = system_prompt()
 
 _STATUS_NOTE = {
     FileStatus.ADDED: "added",
@@ -150,7 +165,9 @@ def budget_rank(file: FileDiff) -> int:
     return 0
 
 
-def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> ReviewPrompt:
+def build_prompt(
+    patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS, max_findings: int = MAX_FINDINGS
+) -> ReviewPrompt:
     """Render the reviewable files into one prompt of at most ``max_chars`` characters of diff.
 
     Files without added lines (deletions, pure renames, mode changes) and binaries are skipped: a comment
@@ -159,7 +176,8 @@ def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> 
     doesn't fit is skipped whole, never cut mid-hunk, and smaller files after it can still fit. The chosen
     files are shown in diff order.
     """
-    prompt = ReviewPrompt(Request(SYSTEM_PROMPT, "", FINDINGS_SCHEMA))
+    system = system_prompt(max_findings)
+    prompt = ReviewPrompt(Request(system, "", FINDINGS_SCHEMA))
     skipped: list[tuple[int, str, str]] = []
     candidates: list[tuple[int, FileDiff, str]] = []
     for index, file in enumerate(patch):
@@ -184,5 +202,5 @@ def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> 
     count = len(prompt.files)
     header = f"Review this pull request diff ({count} file{'s' if count != 1 else ''} shown)."
     body = "\n\n".join(rendered)
-    prompt.request = Request(SYSTEM_PROMPT, f"{header}\n\n<diff>\n{body}\n</diff>\n", FINDINGS_SCHEMA)
+    prompt.request = Request(system, f"{header}\n\n<diff>\n{body}\n</diff>\n", FINDINGS_SCHEMA)
     return prompt

@@ -217,3 +217,17 @@ def test_chosen_files_are_shown_in_diff_order() -> None:
     prompt = build_prompt(parse_patch(text))
     assert [f.path for f in prompt.files] == ["A.md", "b.py"]
     assert prompt.request.prompt.index("File: A.md") < prompt.request.prompt.index("File: b.py")
+
+
+def test_the_prompt_asks_for_the_same_cap_the_review_applies() -> None:
+    from codelens.prompts import system_prompt
+
+    default, wide = (
+        build_prompt(parse_patch(PAY)).request,
+        build_prompt(parse_patch(PAY), max_findings=25).request,
+    )
+    assert "report at most 10." in default.system and "report at most 25." in wide.system
+    assert (
+        default.system == SYSTEM_PROMPT == system_prompt()
+    )  # the default text, which recordings are keyed on
+    assert default.key() != wide.key()
