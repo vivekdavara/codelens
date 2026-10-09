@@ -132,7 +132,7 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     files = len(review.reviewed)
     usage = review.usage
     if not review.reviewed:
-        headline = "Nothing to review: no file in this diff has added lines CodeLens can comment on."
+        headline = "Nothing reviewed: no file in this diff could be shown to the model."
     else:
         headline = (
             f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "

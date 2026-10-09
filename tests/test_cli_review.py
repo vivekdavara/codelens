@@ -301,7 +301,7 @@ def test_a_diff_with_nothing_to_review_makes_no_call(
     code, out, _ = run(capsys, "review", str(deletion), "--recordings", str(tmp_path / "none"))
     assert code == 0
     assert out.splitlines() == [
-        "nothing to review: no file in the diff has added lines (no model call made)",
+        "nothing reviewed: no file in the diff could be shown to the model (no model call made)",
         "not reviewed: gone.py (deleted file)",
     ]
 
@@ -383,3 +383,61 @@ def test_a_diff_on_stdin_is_read_as_bytes(
     recs = latin1_recording(tmp_path, "ratio = total / count", 2)
     code, out, _ = run(capsys, "review", "-", "--recordings", str(recs))
     assert code == 0 and out.startswith("conf.properties:2  high  bug")
+
+
+def test_record_checks_the_recordings_path_before_the_paid_call(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+    diff_file: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("x")
+    args = ("review", str(diff_file), "--provider", "anthropic", "--record", "--recordings", str(not_a_dir))
+    code, _, err = run(capsys, *args)
+    assert code == 1 and "cannot use" in err and "for recordings" in err
+    assert fake_server.requests == []  # no vendor call was made, so none was paid for
+
+
+def test_an_unusable_recorded_answer_is_reported(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+    diff_file: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    fake_server.reply(Reply(200, claude_says("Looks good to me!")))
+    recs = tmp_path / "recs"
+    code, _, err = run(
+        capsys, "review", str(diff_file), "--provider", "anthropic", "--record", "--recordings", str(recs)
+    )
+    (saved,) = recs.iterdir()
+    assert code == 1 and "review failed: response is not valid JSON" in err
+    assert f"recorded the unusable answer in {saved}" in err
+
+
+def test_an_unwritable_summary_file_is_a_warning(
+    capsys: pytest.CaptureFixture[str], diff_file: Path, recordings: Path, tmp_path: Path
+) -> None:
+    missing = tmp_path / "no-such-dir" / "summary.md"
+    code, out, err = run(
+        capsys, "review", str(diff_file), "--recordings", str(recordings), "--summary-file", str(missing)
+    )
+    assert code == 0 and out.startswith("svc/pay.py:3")
+    assert "warning: cannot write the summary" in err
+
+
+def test_files_skipped_for_the_budget_are_not_called_files_without_added_lines(
+    capsys: pytest.CaptureFixture[str], diff_file: Path
+) -> None:
+    code, out, _ = run(capsys, "review", str(diff_file), "--max-prompt-chars", "10")
+    assert code == 0
+    assert out.splitlines() == [
+        "nothing reviewed: no file in the diff could be shown to the model (no model call made)",
+        "not reviewed: svc/pay.py (over the 10-character prompt budget)",
+    ]

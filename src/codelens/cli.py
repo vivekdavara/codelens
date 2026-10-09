@@ -20,7 +20,7 @@ from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, de
 from codelens.findings import FindingsFormatError
 from codelens.github import DEFAULT_AUTHOR, GitHubError, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
-from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, ProviderError, Recorder, make_provider
+from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
 
 _STATUS_LETTER = {"added": "A", "deleted": "D", "modified": "M", "renamed": "R", "copied": "C"}
@@ -173,7 +173,9 @@ def print_review(result: Review, out: TextIO) -> None:
         )
     n, files = len(result.findings), len(result.reviewed)
     if not result.reviewed:
-        print("nothing to review: no file in the diff has added lines (no model call made)", file=out)
+        print(
+            "nothing reviewed: no file in the diff could be shown to the model (no model call made)", file=out
+        )
     else:
         print(
             f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
@@ -204,26 +206,39 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     patch = read_patch(args.file, err)
     if patch is None:
         return 1
+    provider: Provider | None = None
     try:
         provider = make_provider(args.provider, model=args.model, recordings=args.recordings)
         if args.record:
             if provider.name == "recorded":
                 print("codelens: --record needs a live provider (--provider anthropic|openai)", file=err)
                 return 2
-            provider = Recorder(provider, recordings_dir(args))
+            directory = recordings_dir(args)
+            try:  # before the paid call, so a bad path can't throw its answer away
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"codelens: cannot use {directory} for recordings: {exc}", file=err)
+                return 1
+            provider = Recorder(provider, directory)
         result = review(
             patch, provider, max_findings=args.max_findings, max_prompt_chars=args.max_prompt_chars
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: review failed: {exc}", file=err)
+        if isinstance(provider, Recorder) and provider.written:
+            # The answer was saved before it was checked; replaying it will fail the same way.
+            print(f"recorded the unusable answer in {provider.written[-1]}", file=err)
         return 1
     if isinstance(provider, Recorder):
         for path in provider.written:
             print(f"recorded {path}", file=err)
     payload = review_payload(result, args.commit)
     if args.summary_file is not None:
-        with args.summary_file.open("a", encoding="utf-8") as fh:
-            fh.write(summary_body(result, details="") + "\n")
+        try:
+            with args.summary_file.open("a", encoding="utf-8") as fh:
+                fh.write(summary_body(result, details="") + "\n")
+        except OSError as exc:  # the review itself is fine; say so and carry on
+            print(f"codelens: warning: cannot write the summary to {args.summary_file}: {exc}", file=err)
     if args.json:
         json.dump(review_json(result, payload), out, indent=2)
         out.write("\n")

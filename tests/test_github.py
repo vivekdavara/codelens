@@ -192,7 +192,7 @@ def test_summary_when_nothing_was_reviewed() -> None:
     assert summary_body(review).splitlines() == [
         "### CodeLens review",
         "",
-        "Nothing to review: no file in this diff has added lines CodeLens can comment on.",
+        "Nothing reviewed: no file in this diff could be shown to the model.",
         "",
         "Not reviewed: `gone.txt` (deleted file).",
     ]
