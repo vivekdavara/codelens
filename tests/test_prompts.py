@@ -5,7 +5,7 @@ import pytest
 
 from codelens.diff import parse_patch
 from codelens.findings import FINDINGS_SCHEMA, check_response
-from codelens.prompts import MAX_FINDINGS, SYSTEM_PROMPT, build_prompt, render_file
+from codelens.prompts import MAX_FINDINGS, SYSTEM_PROMPT, budget_rank, build_prompt, render_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EXTENDED = parse_patch((FIXTURES / "git_extended_headers.diff").read_text())
@@ -170,3 +170,50 @@ def test_lock_and_generated_files_are_not_shown(path: str, reason: str) -> None:
 def test_files_merely_named_like_lockfiles_inside_a_path_are_still_shown() -> None:
     text = "--- a/docs/yarn.lock.md\n+++ b/docs/yarn.lock.md\n@@ -0,0 +1 @@\n+notes\n"
     assert [f.path for f in build_prompt(parse_patch(text)).files] == ["docs/yarn.lock.md"]
+
+
+@pytest.mark.parametrize(
+    ("path", "rank"),
+    [
+        ("src/app.py", 0),
+        ("action.yml", 0),
+        (".github/workflows/ci.yml", 0),
+        ("tests/test_app.py", 1),
+        ("tests/conftest.py", 1),
+        ("pkg/app_test.go", 1),
+        ("web/view.test.ts", 1),
+        ("web/__tests__/view.tsx", 1),
+        ("test_cli.py", 1),
+        ("README.md", 2),
+        ("docs/guide.rst", 2),
+        ("NOTES.TXT", 2),
+        ("src/testing.py", 0),
+        ("src/contest.py", 0),
+    ],
+)
+def test_budget_rank(path: str, rank: int) -> None:
+    (file,) = parse_patch(f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+x\n")
+    assert budget_rank(file) == rank
+
+
+def test_when_the_budget_runs_out_code_wins_then_tests_then_docs() -> None:
+    def added(path: str, lines: int) -> str:
+        body = "".join(f"+line {n}\n" for n in range(lines))
+        return f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{lines} @@\n{body}"
+
+    text = added("README.md", 30) + added("src/app.py", 30) + added("tests/test_app.py", 30)
+    one_file = len(render_file(parse_patch(added("src/app.py", 30)).files[0]))
+    two = build_prompt(parse_patch(text), max_chars=2 * one_file + 10)
+    assert [f.path for f in two.files] == ["src/app.py", "tests/test_app.py"]
+    assert two.skipped == [("README.md", f"over the {2 * one_file + 10:,}-character prompt budget")]
+    one = build_prompt(parse_patch(text), max_chars=one_file + 10)
+    assert [f.path for f in one.files] == ["src/app.py"]
+    # Skips are reported in diff order whatever the reason.
+    assert [path for path, _ in one.skipped] == ["README.md", "tests/test_app.py"]
+
+
+def test_chosen_files_are_shown_in_diff_order() -> None:
+    text = "--- a/A.md\n+++ b/A.md\n@@ -0,0 +1 @@\n+doc\n--- a/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    prompt = build_prompt(parse_patch(text))
+    assert [f.path for f in prompt.files] == ["A.md", "b.py"]
+    assert prompt.request.prompt.index("File: A.md") < prompt.request.prompt.index("File: b.py")

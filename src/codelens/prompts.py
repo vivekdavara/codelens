@@ -127,27 +127,59 @@ def _skip_reason(file: FileDiff) -> str | None:
     return None
 
 
-def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> ReviewPrompt:
-    """Render every reviewable file into one prompt, in diff order, until ``max_chars`` is used up.
+_DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+_TEST_DIRS = frozenset({"test", "tests", "__tests__", "spec", "specs"})
 
-    Files without added lines (deletions, pure renames, mode changes) and binary files are skipped: a review
-    comment needs a new-file line to sit on. A file that would push the prompt past the budget is skipped
-    whole, never cut mid-hunk, and later smaller files can still fit.
+
+def budget_rank(file: FileDiff) -> int:
+    """Which files get the prompt budget first when it runs out: 0 code and config, 1 tests, 2 prose.
+
+    A bug in code matters more than one in its tests, and either more than a slip in the docs.
+    """
+    *dirs, name = file.path.split("/")
+    if name.lower().endswith(_DOC_SUFFIXES):
+        return 2
+    stem = name.rsplit(".", 1)[0]
+    if (
+        _TEST_DIRS & set(dirs)
+        or stem.startswith("test_")
+        or stem.endswith(("_test", ".test", ".spec", "_spec"))
+    ):
+        return 1
+    return 0
+
+
+def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> ReviewPrompt:
+    """Render the reviewable files into one prompt of at most ``max_chars`` characters of diff.
+
+    Files without added lines (deletions, pure renames, mode changes), binaries, lock files and generated
+    files are skipped: a comment needs a new-file line to sit on, and machine-written diffs aren't worth the
+    budget. When the rest doesn't fit, the budget goes to code first, then tests, then prose
+    (:func:`budget_rank`), in diff order within each; a file that doesn't fit is skipped whole, never cut
+    mid-hunk, and smaller files after it can still fit. The chosen files are shown in diff order.
     """
     prompt = ReviewPrompt(Request(SYSTEM_PROMPT, "", FINDINGS_SCHEMA))
-    rendered: list[str] = []
-    used = 0
-    for file in patch:
+    skipped: list[tuple[int, str, str]] = []
+    candidates: list[tuple[int, FileDiff, str]] = []
+    for index, file in enumerate(patch):
         if (reason := _skip_reason(file)) is not None:
-            prompt.skipped.append((file.path, reason))
-            continue
-        text = render_file(file)
-        if used + len(text) > max_chars:
-            prompt.skipped.append((file.path, f"over the {max_chars:,}-character prompt budget"))
-            continue
-        rendered.append(text)
-        prompt.files.append(file)
-        used += len(text)
+            skipped.append((index, file.path, reason))
+        else:
+            candidates.append((index, file, render_file(file)))
+    chosen: set[int] = set()
+    used = 0
+    for index, _file, text in sorted(candidates, key=lambda c: (budget_rank(c[1]), c[0])):
+        if used + len(text) <= max_chars:
+            chosen.add(index)
+            used += len(text)
+    rendered: list[str] = []
+    for index, file, text in candidates:
+        if index in chosen:
+            rendered.append(text)
+            prompt.files.append(file)
+        else:
+            skipped.append((index, file.path, f"over the {max_chars:,}-character prompt budget"))
+    prompt.skipped = [(path, reason) for _, path, reason in sorted(skipped)]
     count = len(prompt.files)
     header = f"Review this pull request diff ({count} file{'s' if count != 1 else ''} shown)."
     body = "\n\n".join(rendered)

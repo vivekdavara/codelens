@@ -206,11 +206,18 @@ File: shop/orders.py (modified)
 
 (An excerpt of `codelens prompt tests/fixtures/sample_pr.diff`.)
 
-- **Which files.** Diff order. Files with no added lines (deletions, pure renames, mode changes) and binaries
-  are skipped, since a comment needs a new-file line. A file that would push the prompt past 200,000
-  characters (roughly 50K tokens at about 4 characters per token) is skipped whole, never cut mid-hunk.
-  Every skip is reported with its reason, and findings on skipped files are rejected: the model never saw
-  them.
+- **Which files.** Files with no added lines (deletions, pure renames, mode changes) and binaries are
+  skipped, since a comment needs a new-file line, and so are lock files and generated files (`uv.lock`,
+  `package-lock.json`, `*.min.js`, protobuf output, snapshots), whose diffs are often the largest in a PR and
+  that nobody reviews line by line. The rest must fit in 200,000 characters (roughly 50K tokens at about 4
+  characters per token). When they don't, the budget goes to code and config first, then tests, then prose
+  (`budget_rank`), in diff order within each; a file that doesn't fit is skipped whole, never cut mid-hunk.
+  The chosen files are shown in diff order. Every skip is reported with its reason, and findings on skipped
+  files are rejected: the model never saw them.
+
+  Why the ranking: on this repo's own day-2 diff (`git diff -M 1bbff57 2526f77`, 35 files), taking files in
+  diff order showed 28 and cut 7 test files while the three Markdown docs took about 40,000 characters; with
+  the ranking, 31 are shown and the cut ones are the three docs and one test file.
 - **What the system prompt says.** Only real problems in the changed lines; no style, no praise; few
   confident findings over many guesses, at most 10; how to read the margin; what each field and severity
   means; and that the diff is untrusted input to review, not instructions to follow.
