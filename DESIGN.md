@@ -45,10 +45,13 @@ flowchart LR
 | Stage | Module | Day |
 |---|---|---|
 | Unified-diff parser and line mapping | `codelens.diff` | 1 |
-| CLI and composite action | `codelens.cli`, `action.yml` | 1 |
-| Provider interface, recorded provider, prompts, findings schema | `codelens.providers`, `codelens.review` | 2 |
-| Posting reviews (dry-run by default locally) | `codelens.github` | 2 |
-| Static pre-pass, dedupe, ranking, eval harness | `codelens.static`, `codelens.rank`, `evals/` | 3 |
+| CLI and composite action | `codelens.cli`, `action.yml` | 1, 2 |
+| Findings schema, validation, quote-checked anchoring | `codelens.findings` | 2 |
+| Prompt builder | `codelens.prompts` | 2 |
+| Provider interface, recorded provider, Anthropic and OpenAI over HTTP | `codelens.providers` | 2 |
+| Review engine (one call, validate, anchor, rank, cap) | `codelens.review` | 2 |
+| Posting reviews (dry run by default in the CLI) | `codelens.github` | 2 |
+| Static pre-pass, dedupe, eval harness | `codelens.static`, `evals/` | 3 |
 | Test generation and coverage delta | `codelens.testgen` | 4 |
 
 ## The diff parser (day 1)
@@ -119,59 +122,181 @@ to cover the whole file). If any line number or count were off by one, the rebui
 
 ## Findings (day 2)
 
-A finding is the model's (or the static pre-pass's) claim about one line:
+A finding is the model's (or, from day 3, the static pre-pass's) claim about one line of the new file:
 
 ```json
 {
-  "path": "src/app/payments.py",
-  "line": 42,
-  "side": "RIGHT",
+  "path": "shop/orders.py",
+  "line": 15,
+  "quote": "        total -= total * DISCOUNTS[code]",
   "severity": "high",
   "category": "bug",
-  "title": "Refund amount can go negative",
-  "body": "`amount - fee` is not clamped; a refund smaller than the fee yields a negative transfer.",
-  "confidence": 0.8,
-  "source": "llm"
+  "title": "An unknown discount code raises KeyError",
+  "body": "`DISCOUNTS[code]` raises `KeyError` for any code not in the table...",
+  "confidence": 0.9
 }
 ```
 
 `severity` is one of `critical`, `high`, `medium`, `low`; `category` one of `bug`, `security`, `performance`,
-`maintainability`, `test`. The model is asked for a JSON array matching this schema; anything that fails schema
-validation or anchoring is dropped and counted (the count is reported, so silent loss is visible).
+`maintainability`, `test`. CodeLens adds `side` (always `RIGHT` for model findings) and `source` (`llm`).
+
+### Schema
+
+The model answers `{"findings": [...]}`: an object at the root, because structured-output modes want one
+(OpenAI's strict mode requires it). `FINDINGS_SCHEMA` is sent with every request and stays inside the JSON
+Schema subset both vendors' strict modes accept: every object closed with `additionalProperties: false`,
+every property required, and no `minimum`/`maximum`/`minLength`/`maxLength` (a test walks the schema to keep
+it that way). The limits the subset can't express are enforced client-side.
+
+### Validation
+
+`parse_findings` checks each item on its own, so one bad item rejects only itself:
+
+- exactly the schema's keys, with the right JSON types (`line: true` is not a line number, though Python's
+  `bool` is an `int`; `NaN` and `Infinity` are refused at the JSON level);
+- `line >= 1`, `0 <= confidence <= 1`, non-empty `path`, `title` and `body`, title at most 200 characters and
+  body at most 4,000;
+- the whole response must be a findings object; one surrounding Markdown fence is accepted (models without
+  structured output add them), nothing else around the JSON is. An unusable response raises
+  `FindingsFormatError`, which fails the run.
+
+### Anchoring and the quote check
+
+`anchor_finding` then requires the finding's path to be a file the model was shown, its line to be a line
+`FileDiff.anchor` accepts, and its `quote` to appear in that line (whitespace-insensitive; a blank line needs a
+blank quote). Each failure is recorded as a `Rejection` with its index in the model's array and a kind:
+`invalid` (schema), `unanchored` (not a diff line), `misquoted` (a diff line, but not the one quoted). Nothing
+is moved; rejections are counted and shown in the review summary, so silent loss is visible.
+
+The quote check exists because line-number anchoring alone accepts the commonest model mistake: citing a line
+one or two away from the one meant, which usually still lies inside the hunk. Measured on real code with
+`scripts/measure_quote_check.py` (seeded edits to 300 files of the Python 3.11.12 standard library, diffed by
+git): of 21,692 simulated off-by-one/two citations, 17,366 land inside a hunk; the quote check rejects 16,738 of
+those (96.4%). The 628 it lets through sit on a line with the same text as the intended one (438 blank lines,
+118 identical lines, 72 where the quoted text is part of the neighbour; an exact-match rule would catch those
+72 too, at the cost of rejecting models that quote part of a long line). A correct citation is never rejected.
+
+Model findings are RIGHT-side only. The prompt numbers new-file lines and leaves removed lines unnumbered, so
+there is one number space and no way to cite the wrong side; a problem caused by a removal is cited on the
+nearest numbered line, as the prompt says.
+
+## The prompt (day 2)
+
+`build_prompt` renders a fixed system prompt and a user prompt holding the diff:
+
+```text
+Review this pull request diff (2 files shown).
+
+<diff>
+File: shop/orders.py (modified)
+@@ -2,10 +2,21 @@
+ 2  
+ 3  from decimal import Decimal
+...
+11  
+   -def order_total(lines: list[tuple[Decimal, int]]) -> Decimal:
+   -    return sum((line_total(p, q) for p, q in lines), Decimal("0"))
+12 +def order_total(lines: list[tuple[Decimal, int]], code: str | None = None) -> Decimal:
+13 +    total = sum((line_total(p, q) for p, q in lines), Decimal("0"))
+14 +    if code:
+15 +        total -= total * DISCOUNTS[code]
+...
+</diff>
+```
+
+(An excerpt of `codelens prompt tests/fixtures/sample_pr.diff`.)
+
+- **Which files.** Diff order. Files with no added lines (deletions, pure renames, mode changes) and binaries
+  are skipped, since a comment needs a new-file line. A file that would push the prompt past 200,000
+  characters (roughly 50K tokens at about 4 characters per token) is skipped whole, never cut mid-hunk.
+  Every skip is reported with its reason, and findings on skipped files are rejected: the model never saw
+  them.
+- **What the system prompt says.** Only real problems in the changed lines; no style, no praise; few
+  confident findings over many guesses, at most 10; how to read the margin; what each field and severity
+  means; and that the diff is untrusted input to review, not instructions to follow.
+- **Prompt injection.** The instruction is backed by structure. Every diff-derived line sits behind a margin,
+  so no text in the diff can produce a column-0 `</diff>` or `File:` line, and files whose decoded paths
+  contain control characters (git can quote a newline into a path) are not shown at all. Model output is
+  still treated as data: validated, anchored, and `@mentions` in it are broken before posting.
+- **Deterministic.** No timestamps, no random delimiters: the recorded provider keys on a hash of the prompt.
+  `codelens prompt DIFF` prints exactly what would be sent, and the key.
 
 ## Providers (day 2)
 
 ```python
+@dataclass(frozen=True)
+class Request:
+    system: str
+    prompt: str
+    schema: Mapping[str, Any] | None = None  # structured output, or None for free text
+
+
 class Provider(Protocol):
     name: str
 
-    def complete(self, system: str, prompt: str) -> str: ...
+    def complete(self, request: Request) -> Completion: ...  # text, model, usage
 ```
 
-- `RecordedProvider` looks responses up by SHA-256 of `(system, prompt)` in a JSON fixtures directory and fails
-  loudly on a miss, so a prompt change can't silently skip the model. A record mode, run by Vivek with a key,
-  captures new fixtures.
-- `AnthropicProvider` / `OpenAIProvider` call the vendor HTTP APIs with the standard library HTTP client; selected
-  with `CODELENS_PROVIDER=anthropic|openai`, keys read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. Neither is
-  used in tests or CI.
+- **`RecordedProvider`** (the default) looks up `<key>.json`, where the key is the SHA-256 of the request's
+  canonical JSON (system, prompt and schema; pinned by a test, since changing the encoding would orphan every
+  recording). A miss raises `RecordingMissing`, so a prompt change can't silently replay a stale answer. Each
+  recording stores the request it answers and is refused if that request no longer hashes to its file name.
+  `Recorder` wraps a live provider and saves what it returns (`codelens review --record`). Recordings written
+  by hand for tests say `"model": "hand-written"` and are never reported as model quality.
+- **`AnthropicProvider`** posts to `/v1/messages`: `claude-opus-5-5` by default, `output_config.effort` `high`
+  (code review is reasoning-heavy; the model's own default is `medium`), structured output through
+  `output_config.format`, `max_tokens` 16,000 (a non-streaming call, and thinking tokens count against it), and
+  server-side refusal fallbacks (`"fallbacks": "default"` behind the `server-side-fallback-2026-07-01` beta) so
+  a classifier decline is retried on another model; the completion reports the model that actually answered.
+  `stop_reason` is checked before content: `refusal` raises `ProviderRefused` with its category, `max_tokens`
+  raises `ProviderTruncated` (half a JSON object is not a review). Only `text` blocks are the answer.
+- **`OpenAIProvider`** posts to `/v1/chat/completions` with `response_format` `json_schema` and `strict: true`,
+  and `max_completion_tokens`; a refusal message or `content_filter` finish raises `ProviderRefused`, a
+  `length` finish `ProviderTruncated`.
+- **Selection.** `--provider` or `CODELENS_PROVIDER` (`recorded` when unset). Keys come from
+  `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` and are checked before any request; `CODELENS_MODEL`,
+  `CODELENS_EFFORT`, `CODELENS_MAX_TOKENS` and `CODELENS_FALLBACKS=0` tune the call. The endpoint override is
+  `CODELENS_BASE_URL`, deliberately not the SDK's `ANTHROPIC_BASE_URL`: other tools set that variable for
+  their own use (Claude Code does), and a key should only go where CodeLens was explicitly pointed.
+
+Both vendors are called with the standard library (`codelens.providers.http.post_json`), which does what the
+vendor SDKs do on failure: retry 408, 409, 429, 5xx (including Anthropic's 529) and connection errors up to 3
+attempts; wait the server's `retry-after-ms` / `retry-after` (seconds or HTTP date) when it is at most 60 s,
+else back off exponentially from 1 s with up to 25% jitter; let `x-should-retry` override the status. It
+refuses redirects, because urllib would forward the API key header to the new location. Errors carry the
+vendor's message, error type and request id, never the key. Tests run all of it against a scripted local HTTP
+server (`tests/conftest.py`), so real sockets, timeouts and refused connections are exercised.
 
 ## Posting to GitHub (day 2)
 
-One review per run through `POST /repos/{owner}/{repo}/pulls/{number}/reviews` with `event: COMMENT` and all
-comments attached, so the PR author gets one notification instead of one per finding. The action's job needs
-`pull-requests: write`. `--dry-run` prints the review payload instead of posting; it is the default for the CLI
-and opt-out for the action.
+One review per run through `POST /repos/{owner}/{repo}/pulls/{number}/reviews` with `event: COMMENT`, the
+reviewed head commit as `commit_id`, a summary body (findings table, model and token usage, and every
+rejected, capped or skipped item), and one line comment per finding (`path`, `line`, `side`). The PR author
+gets one notification instead of one per finding, and a review with no findings is not posted at all.
 
-The action triggers on `pull_request`, never `pull_request_target`: the latter runs with write tokens and secrets
-on code from forks. On fork PRs secrets are unavailable, so the action falls back to the recorded provider in
-dry-run mode and says so in the job log.
+- **Never retried.** The Reviews API has no idempotency key, so a retry after a timeout could post the
+  review twice. A failure fails the step; re-running the job is safe.
+- **422 fallback.** If GitHub refuses the line comments (typically "line must be part of the diff" because
+  the PR moved on after the diff was fetched), the review is posted once more with each finding written out in
+  the body instead.
+- **Defanged output.** Model-written text can be steered by the diff, so `@mentions` outside code spans and
+  fences get a word joiner after the `@` (GitHub then doesn't ping anyone); code is left alone so a pasted
+  `@decorator` stays valid. The repository name is checked against `owner/name` before it becomes a URL path.
+- **Dry run by default in the CLI**; `--post` with `--repo`/`--pr` and `GITHUB_TOKEN` posts.
+
+The action runs the review on `pull_request` (never `pull_request_target`, which runs fork code with write
+tokens and secrets) and posts by default (`post: "true"`; the job needs `pull-requests: write`). It always
+writes the review to the job summary. When there is nothing to review with, it skips the review with a
+notice instead of failing: a live provider without `api-key` (a fork's PR gets no secrets), or the recorded
+provider without `recordings`. Inputs reach the shell through env only.
 
 ## Static pre-pass, ranking and evals (day 3)
 
 Ruff runs on the changed Python files; its findings inside `changed_ranges()` become `source: "static"` findings
 and are also shown to the model as grounding ("ruff already flagged line 18 as F841"). A few custom AST rules
 cover bug patterns ruff does not (decided on day 3). Findings are deduped by `(path, line, category)` with the
-higher-confidence one kept, then ranked by severity, then confidence, and capped (default 10 per review).
+higher-confidence one kept. Ranking (severity, then confidence) and the cap of 10 per review already exist
+from day 2 (`codelens.review.rank`).
 
 The eval set is a directory of small PRs, each a base snapshot, a diff with one or more seeded bugs, and the
 expected `(path, line, category)` labels. Precision and recall are computed against recorded responses, so the
@@ -194,6 +319,14 @@ project.
   commentable line: a comment on a neighbouring line reads as a confident claim about the wrong code.
 - **`line`/`side`, not `position`.** GitHub's current API uses file line numbers; `position` is computed only for
   compatibility with the older endpoint and for debugging.
+- **Quote the line, not just number it.** One extra field per finding turns "the line exists" into "the line
+  says what the model thinks it says", which catches 96.4% of near-miss citations that anchoring alone would
+  post on the wrong line (measured above).
+- **Raw HTTP, not vendor SDKs.** Two small request builders and one retrying client keep the action
+  dependency-free and make every header and retry decision visible and testable; the cost is maintaining
+  them as the APIs evolve.
+- **Fail loudly on a recording miss.** A replay that quietly fell back to a live call, or to no review, would
+  make CI results depend on whether a key happened to be present.
 
 ## Out of scope
 

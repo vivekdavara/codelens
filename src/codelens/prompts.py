@@ -17,7 +17,7 @@ __all__ = ["DEFAULT_MAX_PROMPT_CHARS", "MAX_FINDINGS", "SYSTEM_PROMPT", "ReviewP
 
 MAX_FINDINGS = 10
 DEFAULT_MAX_PROMPT_CHARS = 200_000
-"""About 50K tokens of diff: large enough for most PRs, small enough to bound the cost of one review."""
+"""Roughly 50K tokens at about 4 characters per token: room for most PRs, and a bound on one review's cost."""
 
 SYSTEM_PROMPT = "\n\n".join(
     [
