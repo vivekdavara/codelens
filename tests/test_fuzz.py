@@ -139,13 +139,19 @@ def test_kept_findings_always_anchor_on_the_quoted_line() -> None:
     for _ in range(RUNS):
         for text in answers(rng):
             try:
-                findings, _ = check_response(text, PATCH)
+                findings, rejections = check_response(text, PATCH)
             except FindingsFormatError:
                 continue
-            for f in findings:
+            # Kept findings carry their line's full text, so check the quote the model actually sent.
+            rejected = {r.index for r in rejections}
+            items = [item for i, item in enumerate(json.loads(text)["findings"]) if i not in rejected]
+            assert len(items) == len(findings)
+            for item, f in zip(items, findings, strict=True):
                 assert anchor_finding(f, PATCH) is None
                 line = PATCH.files[0].anchor(f.line)
-                assert line is not None and " ".join(f.quote.split()) in " ".join(line.content.split())
+                assert line is not None and f.quote == line.content
+                sent, actual = " ".join(item["quote"].split()), " ".join(line.content.split())
+                assert sent == actual or (sent and sent in actual)
                 kept += 1
     assert kept > 500
 
