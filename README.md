@@ -129,16 +129,19 @@ rather than failing the job; the same happens for the recorded provider without 
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 217 passing | `.venv/bin/pytest` |
-| Line + branch coverage | 98% overall (`cli.py` 95%, `http.py` 96%, `diff.py` 97%, every other module 100%) | `.venv/bin/pytest --cov` |
+| Tests | 272 passing | `.venv/bin/pytest` |
+| Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 97% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Differential check against real git (day 1) | 150 seeded random edits: full-context hunks rebuild both files exactly; every line at default context matches its file line | `.venv/bin/pytest tests/test_diff_against_git.py` |
+| Fuzzing the untrusted parsers | 1,500 seeded rounds each of random and mutated JSON for findings, both vendors' responses, error bodies and recordings: only documented errors raised; found one bug (negative token counts), fixed | `.venv/bin/pytest tests/test_fuzz.py` |
 | The action, end to end | CI job `action-review` runs a full review of the sample PR through `action.yml` from its recording and checks 3 findings kept, 1 rejected | `.github/workflows/ci.yml` |
 
 The quote-check measurement uses synthetic edits (seeded insertions, deletions and changed lines) on real
 code: 300 sampled files of the Python 3.11.12 standard library, diffed by git, 5,423 commentable lines. The
 3.6% it lets through land on a line whose text equals the intended one (438 blank lines, 118 identical lines,
-72 where the quote is part of the neighbour).
+72 where the quote is part of the neighbour). Off-by-one alone: 9,046 of 9,396 (96.3%)
+(`scripts/measure_quote_check.py --offsets=-1,1`). A test keeps the rate on this repo's own sources above 90%
+(95.1% today), so loosening the rule fails CI.
 
 **Not measured yet:** review quality. Precision and recall need real model answers on an eval set of PRs with
 seeded bugs (day 3); the only recording in this repo is hand-written, so no quality number is claimed.
@@ -169,7 +172,7 @@ that fails tells you the command).
   installs, a small attack surface, and every header and retry decision is visible and tested.
 - **One review, never retried.** One notification per run, and no duplicate reviews after a timeout.
 
-More in [DESIGN.md](DESIGN.md).
+More in [DESIGN.md](DESIGN.md); interview questions and answers in [WALKTHROUGH.md](WALKTHROUGH.md).
 
 ## License
 
