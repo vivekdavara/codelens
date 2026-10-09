@@ -134,7 +134,7 @@ push has landed by the time the diff is fetched, the review is skipped and that 
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 321 passing | `.venv/bin/pytest` |
+| Tests | 323 passing | `.venv/bin/pytest` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 97% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Real history | every commit of this repository parses and renders: 48 commits, 122 file diffs, 0 failures at `8646d07` (another local clone, 50 Java/SQL/YAML commits: 0 failures) | `.venv/bin/python scripts/check_history.py [repo]` |
