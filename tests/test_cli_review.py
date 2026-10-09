@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -343,3 +344,42 @@ def test_post_reports_findings_it_did_not_repeat(
     assert code == 0
     assert "posted review 5 with 1 findings as line comments: u" in err
     assert "not repeated: 1 findings an earlier review already posted" in err
+
+
+LATIN1 = (
+    b"--- a/conf.properties\n+++ b/conf.properties\n@@ -0,0 +1,2 @@\n+title=Caf\xe9\n+ratio = total / count\n"
+)
+
+
+def latin1_recording(tmp_path: Path, quote: str, line: int) -> Path:
+    from codelens.diff import decode_diff
+
+    finding = {**FINDING, "path": "conf.properties", "line": line, "quote": quote}
+    recs = tmp_path / "latin1-recs"
+    request = build_prompt(parse_patch(decode_diff(LATIN1))).request
+    write_recording(recs, request, Completion(json.dumps({"findings": [finding]}), HAND_WRITTEN), "recorded")
+    return recs
+
+
+def test_a_diff_that_is_not_utf8_is_reviewed_with_replacement_characters(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    diff = tmp_path / "latin1.diff"
+    diff.write_bytes(LATIN1)
+    recs = latin1_recording(tmp_path, "title=Caf�", 1)
+    code, out, _ = run(capsys, "review", str(diff), "--recordings", str(recs), "--json")
+    assert code == 0
+    (comment,) = json.loads(out)["payload"]["comments"]  # building it fingerprints the line: no crash
+    assert comment["line"] == 1 and "<!-- codelens:" in comment["body"]
+
+
+def test_a_diff_on_stdin_is_read_as_bytes(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Stdin:
+        buffer = io.BytesIO(LATIN1)
+
+    monkeypatch.setattr("sys.stdin", Stdin())
+    recs = latin1_recording(tmp_path, "ratio = total / count", 2)
+    code, out, _ = run(capsys, "review", "-", "--recordings", str(recs))
+    assert code == 0 and out.startswith("conf.properties:2  high  bug")

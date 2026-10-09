@@ -223,3 +223,9 @@ def test_schema_stays_inside_the_structured_output_subset() -> None:
 def test_kept_findings_carry_the_full_text_of_their_line() -> None:
     (kept,), _ = check_response(response(item(quote="net < 0")), PATCH)
     assert kept.quote == "    if net < 0:"
+
+
+def test_strings_with_unpaired_surrogates_are_rejected() -> None:
+    text = response(item()).replace('"Clamping hides the error"', '"Clamping \\ud800"')
+    findings, (rejection,) = parse_findings(text)
+    assert findings == [] and "title contains an unpaired surrogate" in rejection.detail

@@ -20,6 +20,7 @@ __all__ = [
     "LineKind",
     "PatchSet",
     "Side",
+    "decode_diff",
     "parse_hunk_header",
     "parse_patch",
 ]
@@ -438,6 +439,16 @@ class _Parser:
         if not hunk.lines:
             raise self.error("'No newline at end of file' marker before any hunk line")
         hunk.lines[-1].no_newline_at_eof = True
+
+
+def decode_diff(data: bytes) -> str:
+    """Diff bytes as text: UTF-8, with bytes that aren't UTF-8 shown as U+FFFD, and line endings untouched.
+
+    A diff can carry any bytes (a Latin-1 file, a binary that git didn't detect). Decoding them to
+    replacement characters, rather than to surrogate escapes, keeps every later step on valid Unicode: the
+    prompt, the recording, the fingerprint and the posted text can all be encoded as UTF-8.
+    """
+    return data.decode("utf-8", errors="replace")
 
 
 def parse_patch(text: str) -> PatchSet:

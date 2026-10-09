@@ -88,3 +88,11 @@ def test_recorder_saves_what_the_live_provider_said(tmp_path: Path) -> None:
     assert recorder.written == [tmp_path / f"{REQUEST.key()}.json"]
     assert json.loads(recorder.written[0].read_text())["provider"] == "echo"
     assert RecordedProvider(tmp_path).complete(REQUEST) == first
+
+
+def test_any_string_the_vendor_sent_can_be_recorded(tmp_path: Path) -> None:
+    # A JSON "\ud800" escape in a vendor reply decodes to a lone surrogate, which UTF-8 text can't hold.
+    completion = Completion('{"findings": [], "note": "café \ud800"}', "m")
+    path = write_recording(tmp_path, REQUEST, completion, "recorded")
+    assert RecordedProvider(tmp_path).complete(REQUEST) == completion
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]  # no partial file left behind

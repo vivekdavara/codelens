@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from codelens import __version__
-from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, parse_patch
+from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, decode_diff, parse_patch
 from codelens.findings import FindingsFormatError
 from codelens.github import DEFAULT_AUTHOR, GitHubError, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
@@ -114,10 +114,10 @@ def read_patch(path: str, err: TextIO) -> PatchSet | None:
     """Parse the diff at ``path`` (``-`` for stdin); print the problem and return ``None`` on failure."""
     try:
         if path == "-":
-            text = sys.stdin.read()
+            stream = getattr(sys.stdin, "buffer", None)  # bytes, so the locale can't fail the decode
+            text = decode_diff(stream.read()) if stream is not None else sys.stdin.read()
         else:
-            with open(path, encoding="utf-8", errors="surrogateescape", newline="") as fh:
-                text = fh.read()
+            text = decode_diff(Path(path).read_bytes())
         return parse_patch(text)
     except OSError as exc:
         print(f"codelens: {exc}", file=err)

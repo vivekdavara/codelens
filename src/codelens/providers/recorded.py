@@ -36,7 +36,11 @@ def write_recording(directory: Path, request: Request, completion: Completion, p
         },
     }
     path = directory / f"{key}.json"
-    path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    # ASCII-escaped JSON can hold any string the vendor sent (even a lone surrogate from a "\\ud800" escape)
+    # and writing beside the target then renaming means a failure never leaves a half-written recording.
+    partial = path.with_suffix(".json.partial")
+    partial.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    partial.replace(path)
     return path
 
 

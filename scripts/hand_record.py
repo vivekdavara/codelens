@@ -14,7 +14,7 @@ import argparse
 import json
 from pathlib import Path
 
-from codelens.diff import parse_patch
+from codelens.diff import decode_diff, parse_patch
 from codelens.prompts import build_prompt
 from codelens.providers import Completion
 from codelens.providers.recorded import HAND_WRITTEN, write_recording
@@ -30,7 +30,8 @@ def main() -> None:
     args = parser.parse_args()
     response = args.response.read_text(encoding="utf-8").strip()
     json.loads(response)  # refuse to record something that isn't JSON
-    request = build_prompt(parse_patch(args.diff.read_text(encoding="utf-8"))).request
+    # Read exactly as `codelens review` does (bytes, no newline translation), or the keys would differ.
+    request = build_prompt(parse_patch(decode_diff(args.diff.read_bytes()))).request
     print(write_recording(args.out, request, Completion(response, HAND_WRITTEN), "recorded"))
 
 

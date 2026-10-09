@@ -171,6 +171,9 @@ def _validate(index: int, item: Any) -> Finding | Rejection:
     for key in ("path", "quote", "title", "body", "severity", "category"):
         if not isinstance(item[key], str):
             return invalid(f"{key} must be a string")
+        # A JSON "\\ud800" escape decodes to a lone surrogate, which UTF-8 output cannot hold.
+        if any("\ud800" <= ch <= "\udfff" for ch in item[key]):
+            return invalid(f"{key} contains an unpaired surrogate")
     line, confidence = item["line"], item["confidence"]
     # bool is a subclass of int in Python; JSON true is not a line number.
     if type(line) is not int or line < 1:
