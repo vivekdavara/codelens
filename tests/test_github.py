@@ -47,10 +47,10 @@ def a_review(*findings: Finding, **overrides: Any) -> Review:
 
 
 def test_defang_breaks_mentions_outside_code_only() -> None:
-    assert defang("cc @alice and @org/team") == "cc @⁠alice and @⁠org/team"
+    assert defang("cc @alice and @org/team") == "cc @\u2060alice and @\u2060org/team"
     assert defang("use `@property` here") == "use `@property` here"
     assert defang("```python\n@pytest.fixture\ndef f(): ...\n```\nthanks @bob") == (
-        "```python\n@pytest.fixture\ndef f(): ...\n```\nthanks @⁠bob"
+        "```python\n@pytest.fixture\ndef f(): ...\n```\nthanks @\u2060bob"
     )
     assert defang("a lone @ sign") == "a lone @ sign"
 

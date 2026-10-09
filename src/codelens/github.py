@@ -46,7 +46,7 @@ def defang(text: str) -> str:
     alone because GitHub never links mentions there and a pasted ``@decorator`` must stay valid code.
     """
     parts = _CODE.split(text)
-    return "".join(part if i % 2 else _MENTION.sub("@⁠", part) for i, part in enumerate(parts))
+    return "".join(part if i % 2 else _MENTION.sub("@\u2060", part) for i, part in enumerate(parts))
 
 
 def _location(finding: Finding) -> str:
