@@ -3,27 +3,53 @@
     .venv/bin/python scripts/check_history.py              # this repository
     .venv/bin/python scripts/check_history.py ../other     # any local clone
 
-For each commit, `git show -M` output goes through codelens.diff.parse_patch and
-codelens.prompts.build_prompt. Prints the totals and every commit whose diff fails to parse, and exits 1 if
+One `git log -p` over the whole history feeds each commit's diff through codelens.diff.parse_patch and
+codelens.prompts.build_prompt. Git runs with the user's configuration ignored (colour, prefixes and the like
+would change the output), and a merge shows its diff against its first parent, as a pull request does,
+instead of git's combined diff. Prints the totals and every commit whose diff fails to parse, and exits 1 if
 any did.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
 from collections import Counter
 from pathlib import Path
 
-from codelens.diff import DiffParseError, parse_patch
+from codelens.diff import DiffParseError, decode_diff, parse_patch
 from codelens.prompts import build_prompt
 
+GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-    return result.stdout.decode("utf-8", errors="surrogateescape")
+
+def history(repo: Path) -> list[tuple[str, str]]:
+    """``(commit, diff text)`` for every commit, oldest first."""
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "log",
+            "--reverse",
+            "--no-color",
+            "-p",
+            "-M",
+            "--diff-merges=first-parent",
+            "--format=%x00%H",
+        ],
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+    ).stdout
+    commits = []
+    for chunk in out.split(b"\0")[1:]:
+        sha, _, diff = chunk.partition(b"\n")
+        commits.append((sha.decode(), decode_diff(diff)))
+    return commits
 
 
 def main() -> int:
@@ -32,13 +58,12 @@ def main() -> int:
     )
     parser.add_argument("repo", nargs="?", type=Path, default=Path("."))
     args = parser.parse_args()
-    commits = git(args.repo, "rev-list", "--reverse", "HEAD").split()
+    started = time.perf_counter()
+    commits = history(args.repo)
     failures: list[tuple[str, str]] = []
     files = shown = 0
     skipped: Counter[str] = Counter()
-    started = time.perf_counter()
-    for commit in commits:
-        text = git(args.repo, "show", "--format=", "-M", commit)
+    for commit, text in commits:
         try:
             patch = parse_patch(text)
         except DiffParseError as exc:
