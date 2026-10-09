@@ -7,6 +7,7 @@ must be re-recorded, not silently replayed against old answers.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 
 from codelens.diff import FileDiff, FileStatus, PatchSet
@@ -64,16 +65,22 @@ class ReviewPrompt:
     """``(path, reason)`` for every file left out of the prompt."""
 
 
+# Characters other than "\n" that end a line under Unicode rules (str.splitlines). The parser splits only on
+# "\n", so diff content can carry them; shown raw, they would let the diff start a line of its own, such as a
+# fake "</diff>". They are all whitespace to str.split, so showing them as spaces keeps the quote check exact.
+_LINE_BREAKS = str.maketrans(dict.fromkeys("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029", " "))
+
+
 def _unsafe(path: str | None) -> bool:
-    # A decoded git path can contain newlines or other control characters, which could fake prompt structure.
-    return path is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in path)
+    # A decoded git path can contain newlines, other control characters or Unicode line separators.
+    return path is not None and any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in path)
 
 
 def render_file(file: FileDiff) -> str:
     note = _STATUS_NOTE[file.status].format(old=file.old_path)
     blocks = [f"File: {file.path} ({note})"]
     blocks.extend(hunk.render_numbered() for hunk in file.hunks)
-    return "\n".join(blocks)
+    return "\n".join(blocks).translate(_LINE_BREAKS)
 
 
 def _skip_reason(file: FileDiff) -> str | None:

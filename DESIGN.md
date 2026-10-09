@@ -215,9 +215,12 @@ File: shop/orders.py (modified)
   confident findings over many guesses, at most 10; how to read the margin; what each field and severity
   means; and that the diff is untrusted input to review, not instructions to follow.
 - **Prompt injection.** The instruction is backed by structure. Every diff-derived line sits behind a margin,
-  so no text in the diff can produce a column-0 `</diff>` or `File:` line, and files whose decoded paths
-  contain control characters (git can quote a newline into a path) are not shown at all. Model output is
-  still treated as data: validated, anchored, and `@mentions` in it are broken before posting.
+  so no text in the diff can produce a column-0 `</diff>` or `File:` line. That holds under Unicode's idea of
+  a line too: characters other than `\n` that end a line (`\r`, `U+2028`, `U+0085` and the rest of what
+  `str.splitlines` splits on) are shown as spaces, which the whitespace-insensitive quote check treats as the
+  same text. Files whose decoded paths contain control characters or line separators (git can quote a
+  newline into a path) are not shown at all. Model output is still treated as data: validated, anchored, and
+  `@mentions` in it are broken before posting.
 - **Deterministic.** No timestamps, no random delimiters: the recorded provider keys on a hash of the prompt.
   `codelens prompt DIFF` prints exactly what would be sent, and the key.
 
