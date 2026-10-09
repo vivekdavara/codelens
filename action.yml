@@ -162,7 +162,8 @@ runs:
         esac
         export CODELENS_PROVIDER="${PROVIDER:-recorded}"
         if [ -n "$MODEL" ]; then export CODELENS_MODEL="$MODEL"; fi
-        # An input set to an empty expression (an unset ${{ vars.X }}) arrives as "", not as its default.
+        # An input set to an expression that is empty (say, an unset repository variable) arrives as "",
+        # not as the input's default.
         args=(review "$DIFF_PATH" --json
               --max-findings "${MAX_FINDINGS:-10}" --max-prompt-chars "${MAX_PROMPT_CHARS:-200000}")
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then args+=(--summary-file "$GITHUB_STEP_SUMMARY"); fi
