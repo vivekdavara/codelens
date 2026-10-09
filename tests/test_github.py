@@ -291,3 +291,15 @@ def test_a_post_that_times_out_is_not_retried(fake_server: FakeServer) -> None:
         post_review(a_review(finding()), "o/r", 3, TOKEN, api_url=fake_server.url, timeout=0.3)
     # GitHub may have created the review before the client gave up; a retry could post it twice.
     assert [r.method for r in fake_server.requests] == ["GET", "GET", "POST"]
+
+
+def test_the_cap_applies_after_repeats_are_dropped(fake_server: FakeServer) -> None:
+    posted_before = finding()
+    below_the_cap = finding(7, quote="net = 0", severity=Severity.LOW, title="Silent clamp")
+    review = a_review(posted_before, held=[below_the_cap], max_findings=1, over_cap=1)
+    fake_server.reply(Reply(200, [{"body": comment_body(posted_before)}]), Reply(200, []))
+    fake_server.reply(Reply(200, {"id": 91, "html_url": "u"}))
+    posted = post_review(review, "o/r", 3, TOKEN, api_url=fake_server.url)
+    assert (posted.id, posted.comments, posted.repeated) == (91, 1, 1)
+    assert [c["line"] for c in fake_server.requests[-1].body["comments"]] == [7]
+    assert "over the cap" not in fake_server.requests[-1].body["body"]

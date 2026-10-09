@@ -118,6 +118,8 @@ def test_the_cap_keeps_the_worst_findings() -> None:
     result = review(PATCH, Scripted(answer(*items)), max_findings=3)
     assert [(f.line, f.severity.value) for f in result.findings] == [(12, "critical"), (1, "low"), (3, "low")]
     assert result.over_cap == 6
+    # The rest are held, in rank order, for posting to reach into when some of the top three were posted.
+    assert [f.line for f in result.held] == [4, 5, 6, 11, 12, 13] and result.max_findings == 3
 
 
 def test_no_reviewable_files_means_no_provider_call() -> None:

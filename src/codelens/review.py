@@ -21,13 +21,17 @@ __all__ = ["Review", "rank", "review"]
 class Review:
     findings: list[Finding]
     """Anchored findings, worst first, at most ``max_findings`` of them."""
+    held: list[Finding] = field(default_factory=list)
+    """The valid findings ranked below the cap, worst first: posting reaches into these when some of
+    ``findings`` were already posted by an earlier run."""
+    max_findings: int = MAX_FINDINGS
     rejections: list[Rejection] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
     """Files not shown to the model, with the reason."""
     reviewed: list[str] = field(default_factory=list)
     """Paths of the files the model was shown."""
     over_cap: int = 0
-    """Valid findings dropped because the review already had ``max_findings``."""
+    """Valid findings left out because the review already had ``max_findings`` (``len(held)``)."""
     repeated: int = 0
     """Findings left out when posting because an earlier CodeLens review on the PR already posted them."""
     provider: str = ""
@@ -68,8 +72,9 @@ def review(
     # Anchor against the files that were shown: a finding on a file the model never saw is a guess.
     findings, result.rejections = check_response(completion.text, PatchSet(prompt.files))
     ranked = rank(findings)
-    result.findings = ranked[:max_findings]
-    result.over_cap = len(ranked) - len(result.findings)
+    result.findings, result.held = ranked[:max_findings], ranked[max_findings:]
+    result.max_findings = max_findings
+    result.over_cap = len(result.held)
     result.model = completion.model
     result.usage = completion.usage
     return result

@@ -242,8 +242,14 @@ def post_review(
         raise GitHubError(f"could not read the PR's earlier comments: {exc}{_hint(exc)}") from None
     except ProviderError as exc:
         raise GitHubError(f"could not reach GitHub: {exc}") from None
-    new = [f for f in review.findings if fingerprint(f) not in already]
-    review = replace(review, findings=new, repeated=review.repeated + len(review.findings) - len(new))
+    # Drop repeats from the whole ranked pool before capping: otherwise findings an earlier run posted would
+    # keep using up the cap, and the ones ranked below them would never be posted.
+    pool = review.findings + review.held
+    fresh = [f for f in pool if fingerprint(f) not in already]
+    new, held = fresh[: review.max_findings], fresh[review.max_findings :]
+    review = replace(
+        review, findings=new, held=held, over_cap=len(held), repeated=review.repeated + len(pool) - len(fresh)
+    )
     if not new:
         return Posted(None, "", inline=False, repeated=review.repeated)
     inline = True
