@@ -28,6 +28,7 @@ __all__ = [
     "Posted",
     "comment_body",
     "fingerprint",
+    "plural",
     "post_review",
     "posted_fingerprints",
     "review_payload",
@@ -139,7 +140,7 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
         headline = "Nothing reviewed: no file in this diff could be shown to the model."
     else:
         headline = (
-            f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
+            f"{plural(n, 'finding')} on {plural(files, 'reviewed file')} "
             f"({review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens)."
         )
     lines = ["### CodeLens review", "", headline]
@@ -156,13 +157,14 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     notes = []
     if review.rejections:
         counts = ", ".join(f"{kind} {count}" for kind, count in review.rejection_counts().items())
-        notes.append(
-            f"Dropped {len(review.rejections)} finding(s) that failed validation or anchoring ({counts})."
-        )
+        dropped = plural(len(review.rejections), "finding")
+        notes.append(f"Dropped {dropped} that failed validation or anchoring ({counts}).")
     if review.over_cap:
-        notes.append(f"Left out {review.over_cap} lower-ranked finding(s) over the cap.")
+        notes.append(f"Left out {plural(review.over_cap, 'lower-ranked finding')} over the cap.")
     if review.repeated:
-        notes.append(f"Not repeated: {review.repeated} finding(s) an earlier CodeLens review already posted.")
+        notes.append(
+            f"Not repeated: {plural(review.repeated, 'finding')} an earlier CodeLens review already posted."
+        )
     if review.skipped:
         skipped = ", ".join(f"{_path(path)} ({reason})" for path, reason in review.skipped[:MAX_LISTED])
         rest = len(review.skipped) - MAX_LISTED
@@ -190,6 +192,11 @@ def review_payload(review: Review, commit_id: str | None = None, *, inline: bool
         else []
     )
     return payload
+
+
+def plural(n: int, noun: str) -> str:
+    """``1 finding``, ``3 findings``: counts in messages, written once."""
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
 
 
 def _hint(exc: ProviderHTTPError) -> str:

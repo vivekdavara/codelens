@@ -18,7 +18,7 @@ from typing import Any, TextIO
 from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, decode_diff, parse_patch
 from codelens.findings import FindingsFormatError
-from codelens.github import DEFAULT_AUTHOR, GitHubError, post_review, review_payload, summary_body
+from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
@@ -179,7 +179,7 @@ def print_review(result: Review, out: TextIO) -> None:
         )
     else:
         print(
-            f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
+            f"{plural(n, 'finding')} on {plural(files, 'reviewed file')} "
             f"({result.provider}: {result.model}, "
             f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens)",
             file=out,
@@ -190,7 +190,7 @@ def print_review(result: Review, out: TextIO) -> None:
         for r in result.rejections:
             print(f"  [{r.index}] {r.kind}: {r.detail}", file=out)
     if result.over_cap:
-        print(f"over the cap: {result.over_cap} lower-ranked findings left out", file=out)
+        print(f"over the cap: {plural(result.over_cap, 'lower-ranked finding')} left out", file=out)
     for path, reason in result.skipped:
         print(f"not reviewed: {path} ({reason})", file=out)
 
@@ -266,14 +266,18 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         return 1
     if posted.id is None:
         print(
-            f"all {posted.repeated} findings were already posted by an earlier review: nothing posted",
+            f"nothing new to post: an earlier review already posted {plural(posted.repeated, 'finding')}",
             file=err,
         )
         return 0
     where = "as line comments" if posted.inline else "in the review body (GitHub refused the line comments)"
-    print(f"posted review {posted.id} with {posted.comments} findings {where}: {posted.url}", file=err)
+    print(
+        f"posted review {posted.id} with {plural(posted.comments, 'finding')} {where}: {posted.url}", file=err
+    )
     if posted.repeated:
-        print(f"not repeated: {posted.repeated} findings an earlier review already posted", file=err)
+        print(
+            f"not repeated: {plural(posted.repeated, 'finding')} an earlier review already posted", file=err
+        )
     return 0
 
 

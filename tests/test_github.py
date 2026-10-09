@@ -98,8 +98,8 @@ def test_summary_lists_findings_and_everything_dropped() -> None:
         "| `svc/pay.py:6` | high | Clamping hides the error |",
         "| `svc/pay.py:9` | low | Pipe \\| in title |",
         "",
-        "Dropped 3 finding(s) that failed validation or anchoring (invalid 1, misquoted 2).",
-        "Left out 1 lower-ranked finding(s) over the cap.",
+        "Dropped 3 findings that failed validation or anchoring (invalid 1, misquoted 2).",
+        "Left out 1 lower-ranked finding over the cap.",
         "Not reviewed: `logo.png` (binary file).",
     ]
 
@@ -270,7 +270,7 @@ def test_findings_already_on_the_pr_are_not_posted_again(fake_server: FakeServer
     assert (posted.id, posted.comments, posted.repeated) == (90, 1, 1)
     sent = fake_server.requests[-1].body
     assert [c["line"] for c in sent["comments"]] == [7]
-    assert "Not repeated: 1 finding(s) an earlier CodeLens review already posted." in sent["body"]
+    assert "Not repeated: 1 finding an earlier CodeLens review already posted." in sent["body"]
 
 
 def test_nothing_is_posted_when_every_finding_is_already_there(fake_server: FakeServer) -> None:

@@ -170,14 +170,14 @@ def test_post_sends_one_review(
     )
     code, _, err = run(capsys, *args)
     assert code == 0
-    assert "posted review 81 with 1 findings as line comments" in err
+    assert "posted review 81 with 1 finding as line comments" in err
     seen = fake_server.requests[-1]
     assert seen.path == "/repos/o/r/pulls/3/reviews" and seen.body["commit_id"] == "c0"
     # The same review again, after another push: the finding is already on the PR.
     earlier = [{"user": {"login": "github-actions[bot]"}, **comment} for comment in seen.body["comments"]]
     fake_server.reply(Reply(200, earlier), Reply(200, []))
     code, _, err = run(capsys, *args)
-    assert code == 0 and "all 1 findings were already posted by an earlier review: nothing posted" in err
+    assert code == 0 and "nothing new to post: an earlier review already posted 1 finding" in err
     assert [r.method for r in fake_server.requests] == ["GET", "GET", "POST", "GET", "GET"]
 
 
@@ -257,7 +257,7 @@ def test_summary_file_gets_the_findings_in_full(
     assert text.startswith("### earlier step\n### CodeLens review\n")  # appended, not overwritten
     assert "#### `svc/pay.py:3`\n\n**Clamping hides the error**" in text
     assert "GitHub did not accept" not in text
-    assert "Dropped 1 finding(s) that failed validation or anchoring (misquoted 1)." in text
+    assert "Dropped 1 finding that failed validation or anchoring (misquoted 1)." in text
 
 
 @pytest.mark.parametrize(
@@ -290,7 +290,7 @@ def test_max_findings_caps_the_review(
     code, out, _ = run(capsys, "review", str(diff_file), "--recordings", str(recs), "--max-findings", "1")
     assert code == 0
     assert out.splitlines()[0].startswith("svc/pay.py:3  high")
-    assert "over the cap: 1 lower-ranked findings left out" in out
+    assert "over the cap: 1 lower-ranked finding left out" in out
 
 
 def test_a_diff_with_nothing_to_review_makes_no_call(
@@ -343,8 +343,8 @@ def test_post_reports_findings_it_did_not_repeat(
     fake_server.reply(Reply(200, earlier), Reply(200, []), Reply(200, {"id": 5, "html_url": "u"}))
     code, _, err = run(capsys, *review_args, "--post", "--repo", "o/r", "--pr", "3")
     assert code == 0
-    assert "posted review 5 with 1 findings as line comments: u" in err
-    assert "not repeated: 1 findings an earlier review already posted" in err
+    assert "posted review 5 with 1 finding as line comments: u" in err
+    assert "not repeated: 1 finding an earlier review already posted" in err
 
 
 LATIN1 = (
