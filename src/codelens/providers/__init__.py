@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
-from codelens.providers.anthropic import DEFAULT_MODEL as ANTHROPIC_MODEL
 from codelens.providers.anthropic import AnthropicProvider
 from codelens.providers.base import (
     Completion,
@@ -19,7 +19,6 @@ from codelens.providers.base import (
     Request,
     Usage,
 )
-from codelens.providers.openai import DEFAULT_MODEL as OPENAI_MODEL
 from codelens.providers.openai import OpenAIProvider
 from codelens.providers.recorded import RecordedProvider, Recorder
 
@@ -44,11 +43,19 @@ PROVIDERS = ("recorded", "anthropic", "openai")
 DEFAULT_RECORDINGS = Path(".codelens/recordings")
 
 
-def _max_tokens(env: Mapping[str, str]) -> int:
-    raw = env.get("CODELENS_MAX_TOKENS") or "16000"
-    if not raw.isdigit() or int(raw) < 1:
-        raise ProviderError(f"CODELENS_MAX_TOKENS must be a positive integer, not {raw!r}")
-    return int(raw)
+def _overrides(env: Mapping[str, str], model: str | None) -> dict[str, Any]:
+    """Only the settings the environment actually gives; everything else keeps the provider's own default,
+    so a default changed in a provider class reaches CLI and action users too."""
+    overrides: dict[str, Any] = {}
+    if model:
+        overrides["model"] = model
+    if base_url := env.get("CODELENS_BASE_URL"):
+        overrides["base_url"] = base_url
+    if raw := env.get("CODELENS_MAX_TOKENS"):
+        if not raw.isdigit() or int(raw) < 1:
+            raise ProviderError(f"CODELENS_MAX_TOKENS must be a positive integer, not {raw!r}")
+        overrides["max_tokens"] = int(raw)
+    return overrides
 
 
 def make_provider(
@@ -67,24 +74,15 @@ def make_provider(
     """
     env = os.environ if env is None else env
     name = name or env.get("CODELENS_PROVIDER") or "recorded"
-    model = model or env.get("CODELENS_MODEL") or None
     if name == "recorded":
         return RecordedProvider(recordings or Path(env.get("CODELENS_RECORDINGS") or DEFAULT_RECORDINGS))
-    base_url = env.get("CODELENS_BASE_URL") or None
+    overrides = _overrides(env, model or env.get("CODELENS_MODEL"))
     if name == "anthropic":
-        return AnthropicProvider(
-            env.get("ANTHROPIC_API_KEY", ""),
-            model=model or ANTHROPIC_MODEL,
-            effort=env.get("CODELENS_EFFORT") or "high",
-            max_tokens=_max_tokens(env),
-            fallbacks=env.get("CODELENS_FALLBACKS", "1") != "0",
-            base_url=base_url or "https://api.anthropic.com",
-        )
+        if effort := env.get("CODELENS_EFFORT"):
+            overrides["effort"] = effort
+        if env.get("CODELENS_FALLBACKS") == "0":
+            overrides["fallbacks"] = False
+        return AnthropicProvider(env.get("ANTHROPIC_API_KEY", ""), **overrides)
     if name == "openai":
-        return OpenAIProvider(
-            env.get("OPENAI_API_KEY", ""),
-            model=model or OPENAI_MODEL,
-            max_tokens=_max_tokens(env),
-            base_url=base_url or "https://api.openai.com",
-        )
+        return OpenAIProvider(env.get("OPENAI_API_KEY", ""), **overrides)
     raise ProviderError(f"unknown provider {name!r}: choose one of {', '.join(PROVIDERS)}")
