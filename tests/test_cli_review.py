@@ -442,3 +442,21 @@ def test_files_skipped_for_the_budget_are_not_called_files_without_added_lines(
         "nothing reviewed: no file in the diff could be shown to the model (no model call made)",
         "not reviewed: svc/pay.py (over the 10-character prompt budget)",
     ]
+
+
+def test_record_writes_where_replay_reads(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+    diff_file: Path,
+    tmp_path: Path,
+) -> None:
+    # Only $CODELENS_RECORDINGS names the directory: --record must write there, and replay must read there.
+    monkeypatch.setenv("CODELENS_RECORDINGS", str(tmp_path / "from-env"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    fake_server.reply(Reply(200, claude_says(ANSWER)))
+    assert run(capsys, "review", str(diff_file), "--provider", "anthropic", "--record")[0] == 0
+    assert len(list((tmp_path / "from-env").iterdir())) == 1
+    code, out, _ = run(capsys, "review", str(diff_file))
+    assert code == 0 and out.startswith("svc/pay.py:3  high")

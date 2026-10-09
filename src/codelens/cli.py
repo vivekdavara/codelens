@@ -196,6 +196,7 @@ def print_review(result: Review, out: TextIO) -> None:
 
 
 def recordings_dir(args: argparse.Namespace) -> Path:
+    """--recordings, else $CODELENS_RECORDINGS, else the default: one answer for replay and record alike."""
     return args.recordings or Path(os.environ.get("CODELENS_RECORDINGS") or DEFAULT_RECORDINGS)
 
 
@@ -209,18 +210,18 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         return 1
     provider: Provider | None = None
     try:
-        provider = make_provider(args.provider, model=args.model, recordings=args.recordings)
+        recordings = recordings_dir(args)
+        provider = make_provider(args.provider, model=args.model, recordings=recordings)
         if args.record:
             if provider.name == "recorded":
                 print("codelens: --record needs a live provider (--provider anthropic|openai)", file=err)
                 return 2
-            directory = recordings_dir(args)
             try:  # before the paid call, so a bad path can't throw its answer away
-                directory.mkdir(parents=True, exist_ok=True)
+                recordings.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                print(f"codelens: cannot use {directory} for recordings: {exc}", file=err)
+                print(f"codelens: cannot use {recordings} for recordings: {exc}", file=err)
                 return 1
-            provider = Recorder(provider, directory)
+            provider = Recorder(provider, recordings)
         result = review(
             patch, provider, max_findings=args.max_findings, max_prompt_chars=args.max_prompt_chars
         )
