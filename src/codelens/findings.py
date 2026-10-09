@@ -154,6 +154,8 @@ def _load(text: str) -> Any:
         return json.loads(stripped, parse_constant=_reject_constant)
     except ValueError as exc:
         raise FindingsFormatError(f"response is not valid JSON: {exc}") from None
+    except RecursionError:
+        raise FindingsFormatError("response is JSON nested too deeply to be findings") from None
 
 
 def _validate(index: int, item: Any) -> Finding | Rejection:

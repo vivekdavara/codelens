@@ -51,7 +51,7 @@ def load_recording(path: Path) -> tuple[Request, Completion]:
         request = Request(record["system"], record["prompt"], record["schema"])
         usage = Usage(**record.get("usage", {}))
         completion = Completion(record["response"], record["model"], usage)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
         raise ProviderError(f"unreadable recording {path}: {exc}") from None
     if request.key() != path.stem or record.get("key") != path.stem:
         raise ProviderError(f"recording {path} does not match its key (was it edited by hand?)")

@@ -194,3 +194,83 @@ def test_an_unparseable_retry_after_ms_falls_back_to_backoff(fake_server: FakeSe
     fake_server.reply(Reply(429, ANTHROPIC_429, {"retry-after-ms": "soon"}), Reply(200, {}))
     call(fake_server, sleeps)
     assert sleeps == [1.0]
+
+
+def raw_server(*responses: bytes) -> tuple[str, list[int]]:
+    """Answer one connection per response with exactly those bytes, then hang up: for cut-off replies."""
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    hits: list[int] = []
+
+    def serve() -> None:
+        with listener:
+            for payload in responses:
+                conn, _ = listener.accept()
+                with conn:
+                    request = b""
+                    while b"\r\n\r\n" not in request:
+                        if not (chunk := conn.recv(65536)):
+                            break
+                        request += chunk
+                    head, _, body = request.partition(b"\r\n\r\n")
+                    length = next(
+                        (
+                            int(h.split(b":")[1])
+                            for h in head.split(b"\r\n")
+                            if h.lower().startswith(b"content-length:")
+                        ),
+                        0,
+                    )
+                    while len(body) < length and (chunk := conn.recv(65536)):
+                        body += chunk
+                    hits.append(1)
+                    conn.sendall(payload)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return f"http://127.0.0.1:{listener.getsockname()[1]}/", hits
+
+
+def test_a_body_cut_short_of_its_content_length_is_retried() -> None:
+    url, hits = raw_server(
+        b'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{"id": 1}',  # valid JSON, but 91 bytes are missing
+        b'HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n{"id": 2}',
+    )
+    sleeps: list[float] = []
+    data, _ = post_json(url, {}, {}, sleep=sleeps.append, rng=lambda: 0.0)
+    assert data == {"id": 2} and len(hits) == 2 and sleeps == [1.0]
+
+
+def test_an_error_body_cut_off_mid_read_still_retries_on_the_status() -> None:
+    url, hits = raw_server(
+        b'HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{"err',
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    )
+    data, _ = post_json(url, {}, {}, sleep=lambda _: None)
+    assert data == {} and len(hits) == 2
+
+
+@pytest.mark.parametrize("form", ["asctime", "-0000"])
+def test_retry_after_dates_without_a_zone_are_read_as_gmt(fake_server: FakeServer, form: str) -> None:
+    import time
+
+    when = time.gmtime(time.time() + 5)
+    value = time.asctime(when) if form == "asctime" else time.strftime("%a, %d %b %Y %H:%M:%S -0000", when)
+    sleeps: list[float] = []
+    fake_server.reply(Reply(429, ANTHROPIC_429, {"retry-after": value}), Reply(200, {}))
+    call(fake_server, sleeps)
+    (slept,) = sleeps
+    assert 3 < slept <= 5
+
+
+def test_a_url_without_a_scheme_is_a_provider_error() -> None:
+    with pytest.raises(ProviderError, match=r"invalid URL 'api\.github\.com/repos'"):
+        post_json("api.github.com/repos", {}, {})
+
+
+def test_json_nested_too_deeply_is_a_provider_error(fake_server: FakeServer) -> None:
+    fake_server.reply(Reply(200, b"[" * 100_000 + b"]" * 100_000))
+    with pytest.raises(ProviderError, match="non-JSON"):
+        call(fake_server, [])

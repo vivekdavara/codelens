@@ -68,6 +68,8 @@ def _server_delay(headers: Mapping[str, str], policy: RetryPolicy) -> float | No
                 when = email.utils.parsedate_to_datetime(value)
             except (TypeError, ValueError):
                 return None
+            if when.tzinfo is None:  # the asctime form and "-0000" carry no zone; HTTP dates are GMT
+                when = when.replace(tzinfo=UTC)
             seconds = (when - datetime.now(UTC)).total_seconds()
     else:
         return None
@@ -158,16 +160,28 @@ def _request(
     if data is not None:
         all_headers["Content-Type"] = "application/json"
     host = urlsplit(url).netloc
+    try:
+        urllib.request.Request(url)
+    except ValueError as exc:  # no scheme, say: a bad CODELENS_BASE_URL or GITHUB_API_URL
+        raise ProviderError(f"invalid URL {url!r}: {exc}") from None
     for attempt in range(1, policy.attempts + 1):
         request = urllib.request.Request(url, data=data, headers=all_headers, method=method)
         try:
             with _OPENER.open(request, timeout=timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 response_headers = {k.lower(): v for k, v in response.headers.items()}
+                # read(n) returns what arrived when the connection drops early, where read() raised; a short
+                # body is a network failure to retry, not a response to parse (it may even be valid JSON).
+                length = response_headers.get("content-length", "")
+                if length.isdigit() and len(raw) < int(length) <= MAX_RESPONSE_BYTES:
+                    raise http.client.IncompleteRead(raw, int(length) - len(raw))
         except urllib.error.HTTPError as exc:
             error_headers = {k.lower(): v for k, v in exc.headers.items()}
-            with exc:
-                error_body = exc.read(MAX_RESPONSE_BYTES)
+            try:
+                with exc:
+                    error_body = exc.read(MAX_RESPONSE_BYTES)
+            except (OSError, http.client.HTTPException):
+                error_body = b""  # the status is what matters; a body cut off mid-read doesn't change it
             if attempt == policy.attempts or not _should_retry(exc.code, error_headers):
                 message, error_type = _error_details(error_body)
                 raise ProviderHTTPError(exc.code, message, error_type, _request_id(error_headers)) from None
@@ -186,6 +200,6 @@ def _request(
             )
         try:
             return json.loads(raw), response_headers
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: JSON nested deeper than Python's stack
             raise ProviderError(f"{host} returned a non-JSON response: {raw[:200]!r}") from None
     raise AssertionError("unreachable")  # pragma: no cover - the loop always returns or raises

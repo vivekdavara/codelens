@@ -229,3 +229,8 @@ def test_strings_with_unpaired_surrogates_are_rejected() -> None:
     text = response(item()).replace('"Clamping hides the error"', '"Clamping \\ud800"')
     findings, (rejection,) = parse_findings(text)
     assert findings == [] and "title contains an unpaired surrogate" in rejection.detail
+
+
+def test_json_nested_too_deeply_is_a_format_error() -> None:
+    with pytest.raises(FindingsFormatError, match="nested too deeply"):
+        parse_findings("[" * 100_000 + "]" * 100_000)
