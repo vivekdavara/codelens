@@ -187,3 +187,10 @@ def test_get_sends_no_body_and_is_retried(fake_server: FakeServer) -> None:
     assert [(r.method, r.path, r.body) for r in fake_server.requests] == [("GET", "/items?page=1", None)] * 2
     assert "content-type" not in fake_server.requests[0].headers
     assert len(sleeps) == 1
+
+
+def test_an_unparseable_retry_after_ms_falls_back_to_backoff(fake_server: FakeServer) -> None:
+    sleeps: list[float] = []
+    fake_server.reply(Reply(429, ANTHROPIC_429, {"retry-after-ms": "soon"}), Reply(200, {}))
+    call(fake_server, sleeps)
+    assert sleeps == [1.0]

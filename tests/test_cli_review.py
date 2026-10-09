@@ -302,3 +302,43 @@ def test_a_diff_with_nothing_to_review_makes_no_call(
         "nothing to review: no file in the diff has added lines (no model call made)",
         "not reviewed: gone.py (deleted file)",
     ]
+
+
+def test_invalid_diffs_fail_both_commands(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    bad = tmp_path / "bad.diff"
+    bad.write_text("--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-a\n")
+    for command in ("prompt", "review"):
+        code, _, err = run(capsys, command, str(bad))
+        assert code == 1 and "invalid diff: line 5: hunk ended early" in err
+
+
+def test_prompt_reports_skipped_files_on_stderr(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    diff = tmp_path / "lock.diff"
+    diff.write_text("--- a/uv.lock\n+++ b/uv.lock\n@@ -0,0 +1 @@\n+x\n")
+    code, out, err = run(capsys, "prompt", str(diff))
+    assert code == 0 and "(0 files shown)" in out
+    assert err == "skipped uv.lock: lock file\n"
+
+
+def test_post_reports_findings_it_did_not_repeat(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+    diff_file: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("GITHUB_API_URL", fake_server.url)
+    recs = tmp_path / "recs"
+    two = json.dumps({"findings": [FINDING, {**FINDING, "line": 5, "quote": "return net", "title": "Other"}]})
+    write_recording(recs, build_prompt(parse_patch(DIFF)).request, Completion(two, HAND_WRITTEN), "recorded")
+    review_args = ("review", str(diff_file), "--recordings", str(recs))
+    _, out, _ = run(capsys, *review_args, "--json")
+    earlier = [
+        {"body": json.loads(out)["payload"]["comments"][0]["body"]}
+    ]  # line 3's comment is already there
+    fake_server.reply(Reply(200, earlier), Reply(200, []), Reply(200, {"id": 5, "html_url": "u"}))
+    code, _, err = run(capsys, *review_args, "--post", "--repo", "o/r", "--pr", "3")
+    assert code == 0
+    assert "posted review 5 with 1 findings as line comments: u" in err
+    assert "not repeated: 1 findings an earlier review already posted" in err
