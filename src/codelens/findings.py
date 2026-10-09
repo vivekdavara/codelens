@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -62,7 +62,7 @@ class Finding:
     body: str
     confidence: float
     quote: str = ""
-    """The text of the cited line as the model copied it; anchoring checks it against the diff."""
+    """The cited line's text as the model copied it; once anchored, the line's full text from the diff."""
     side: Side = Side.RIGHT
     source: str = "llm"
 
@@ -253,8 +253,9 @@ def anchor_finding(finding: Finding, patch: PatchSet, index: int = -1) -> Reject
 def check_response(text: str, patch: PatchSet) -> tuple[list[Finding], list[Rejection]]:
     """Validate and anchor every finding in a model response, in response order.
 
-    Returns the findings that pass both checks and a :class:`Rejection` for each one that doesn't; a
-    rejection's ``index`` is the item's position in the response's ``findings`` array.
+    Returns the findings that pass both checks, each with ``quote`` set to the full text of its line (a model
+    may quote part of it), and a :class:`Rejection` for each one that doesn't; a rejection's ``index`` is the
+    item's position in the response's ``findings`` array.
     """
     findings: list[Finding] = []
     rejections: list[Rejection] = []
@@ -263,7 +264,9 @@ def check_response(text: str, patch: PatchSet) -> tuple[list[Finding], list[Reje
         if isinstance(result, Finding):
             miss = anchor_finding(result, patch, index)
             if miss is None:
-                findings.append(result)
+                file = patch.get(result.path)
+                line = file.anchor(result.line, result.side) if file is not None else None
+                findings.append(replace(result, quote=line.content) if line is not None else result)
                 continue
             result = miss
         rejections.append(result)

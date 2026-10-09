@@ -218,3 +218,8 @@ def test_schema_stays_inside_the_structured_output_subset() -> None:
     text = json.dumps(FINDINGS_SCHEMA)
     for keyword in ("minimum", "maximum", "minLength", "maxLength", "pattern", "minItems", "maxItems"):
         assert f'"{keyword}"' not in text
+
+
+def test_kept_findings_carry_the_full_text_of_their_line() -> None:
+    (kept,), _ = check_response(response(item(quote="net < 0")), PATCH)
+    assert kept.quote == "    if net < 0:"
