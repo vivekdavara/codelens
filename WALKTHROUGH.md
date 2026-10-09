@@ -128,19 +128,24 @@ The review is posted once more with the findings written into its body.
 
 ## Large PRs and limits
 
-**What if the PR is huge?** Files are rendered in diff order until a 200,000-character budget (roughly 50K
-tokens) is used; a file that doesn't fit is skipped whole, never cut mid-hunk, and reported. Lock files and
-generated files (`package-lock.json`, `*.min.js`, protobuf output, snapshots) are skipped first, since their
-diffs are often the largest and nobody reviews them. Findings on files the model wasn't shown are rejected.
+**What if the PR is huge?** The diff shown to the model is capped at 200,000 characters (roughly 50K tokens;
+`max-prompt-chars` changes it). Lock files and generated files (`package-lock.json`, `*.min.js`, protobuf
+output, snapshots) are skipped outright, since their diffs are often the largest and nobody reviews them.
+If the rest still doesn't fit, `prompts.budget_rank` gives the budget to code and config first, then tests,
+then docs; a file that doesn't fit is skipped whole, never cut mid-hunk, and reported. That ranking came
+from running CodeLens on its own day-2 diff (35 files): in plain diff order it cut 7 test files while the
+Markdown docs took about 40,000 characters; ranked, it cuts the 3 docs and 1 test file. Findings on files
+the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 272 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 289 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
-negative token counts passing through); and a CI job that runs a full review through `action.yml` on the
-sample PR.
+negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
+repository (0 failures on this one's 45 commits and on another clone's 50 Java/SQL/YAML commits); and a CI
+job that runs a full review through `action.yml` on the sample PR.
 
 ## What's not done yet
 
