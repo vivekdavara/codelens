@@ -1,4 +1,4 @@
-"""POST JSON with retries, on the standard library HTTP client. Shared by the live providers and GitHub.
+"""JSON over HTTP with retries, on the standard library HTTP client. Shared by the providers and GitHub.
 
 Retries follow what the vendor SDKs do: retry 408, 409, 429, 5xx (including Anthropic's 529 "overloaded") and
 connection errors, honour ``retry-after`` / ``retry-after-ms`` when the server sends a short one, otherwise
@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 from codelens.providers.base import ProviderError, ProviderHTTPError
 
-__all__ = ["DEFAULT_POLICY", "MAX_RESPONSE_BYTES", "RETRY_STATUSES", "RetryPolicy", "post_json"]
+__all__ = ["DEFAULT_POLICY", "MAX_RESPONSE_BYTES", "RETRY_STATUSES", "RetryPolicy", "get_json", "post_json"]
 
 RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -126,11 +126,40 @@ def post_json(
     connection silent for minutes. Raises :class:`ProviderHTTPError` for an error status that is not retried
     or still fails on the last attempt, and :class:`ProviderError` for network failures and non-JSON bodies.
     """
-    data = json.dumps(body).encode("utf-8")
-    all_headers = {"Content-Type": "application/json", "Accept": "application/json", **headers}
+    return _request("POST", url, body, headers, timeout=timeout, policy=policy, sleep=sleep, rng=rng)
+
+
+def get_json(
+    url: str,
+    headers: Mapping[str, str],
+    *,
+    timeout: float = 600.0,
+    policy: RetryPolicy = DEFAULT_POLICY,
+    sleep: Callable[[float], None] = time.sleep,
+    rng: Callable[[], float] = random.random,
+) -> tuple[Any, dict[str, str]]:
+    """GET ``url`` and return the decoded JSON response and its headers; errors as for :func:`post_json`."""
+    return _request("GET", url, None, headers, timeout=timeout, policy=policy, sleep=sleep, rng=rng)
+
+
+def _request(
+    method: str,
+    url: str,
+    body: Mapping[str, Any] | None,
+    headers: Mapping[str, str],
+    *,
+    timeout: float,
+    policy: RetryPolicy,
+    sleep: Callable[[float], None],
+    rng: Callable[[], float],
+) -> tuple[Any, dict[str, str]]:
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    all_headers = {"Accept": "application/json", **headers}
+    if data is not None:
+        all_headers["Content-Type"] = "application/json"
     host = urlsplit(url).netloc
     for attempt in range(1, policy.attempts + 1):
-        request = urllib.request.Request(url, data=data, headers=all_headers, method="POST")
+        request = urllib.request.Request(url, data=data, headers=all_headers, method=method)
         try:
             with _OPENER.open(request, timeout=timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)

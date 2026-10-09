@@ -6,7 +6,7 @@ import pytest
 from conftest import FakeServer, Reply
 
 from codelens.providers import ProviderError, ProviderHTTPError
-from codelens.providers.http import MAX_RESPONSE_BYTES, RetryPolicy, _backoff, post_json
+from codelens.providers.http import MAX_RESPONSE_BYTES, RetryPolicy, _backoff, get_json, post_json
 
 ANTHROPIC_429 = {
     "type": "error",
@@ -173,3 +173,17 @@ def test_an_oversized_error_body_is_cut_short(fake_server: FakeServer) -> None:
     with pytest.raises(ProviderHTTPError) as exc:
         call(fake_server, [])
     assert len(str(exc.value)) < 400  # a non-JSON body is quoted only up to 300 characters
+
+
+def test_get_sends_no_body_and_is_retried(fake_server: FakeServer) -> None:
+    sleeps: list[float] = []
+    fake_server.reply(
+        Reply(502, {"message": "bad gateway"}), Reply(200, [{"id": 1}], {"Link": "<x>; rel=next"})
+    )
+    data, headers = get_json(
+        fake_server.url + "/items?page=1", {"Authorization": "Bearer t"}, sleep=sleeps.append
+    )
+    assert data == [{"id": 1}] and headers["link"] == "<x>; rel=next"
+    assert [(r.method, r.path, r.body) for r in fake_server.requests] == [("GET", "/items?page=1", None)] * 2
+    assert "content-type" not in fake_server.requests[0].headers
+    assert len(sleeps) == 1
