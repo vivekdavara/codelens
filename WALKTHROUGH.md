@@ -144,7 +144,7 @@ the git differential test (day 1); a scripted local HTTP server standing in for 
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
 negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
-repository (0 failures on this one's 45 commits and on another clone's 50 Java/SQL/YAML commits); and a CI
+repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); and a CI
 job that runs a full review through `action.yml` on the sample PR.
 
 ## What's not done yet
