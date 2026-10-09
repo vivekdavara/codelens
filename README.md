@@ -121,7 +121,8 @@ jobs:
 ```
 
 Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `post` (default `"true"`),
-`diff-file`, `github-token`, `python-version`. Outputs: `files`, `findings`, `rejected`, `diff-file`. The review
+`max-findings` (default 10), `max-prompt-chars` (default 200000), `diff-file`, `github-token`,
+`python-version`. Outputs: `files`, `findings`, `rejected`, `diff-file`. The review
 always goes to the job summary. On a fork's PR there are no secrets, so the review is skipped with a notice
 rather than failing the job; the same happens for the recorded provider without `recordings`.
 
