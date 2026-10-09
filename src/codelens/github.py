@@ -63,10 +63,15 @@ def comment_body(finding: Finding) -> str:
     return f"**{defang(finding.title)}**\n\n{defang(finding.body)}\n\n<sub>CodeLens · {meta}</sub>"
 
 
-def summary_body(review: Review, *, inline: bool = True) -> str:
+_FALLBACK_LEAD = "GitHub did not accept these as line comments, so they are listed here:"
+
+
+def summary_body(review: Review, *, details: str | None = None) -> str:
     """The review's top-level text: what was reviewed, the findings, and everything that was dropped.
 
-    With ``inline=False`` (GitHub refused the line comments) each finding is written out in full here.
+    Findings are a table by default (they are also line comments). With ``details`` set, each one is written
+    out in full instead, after ``details`` as a lead sentence when it is not empty: for a review whose line
+    comments GitHub refused, and for the Actions job summary.
     """
     n = len(review.findings)
     files = len(review.reviewed)
@@ -77,13 +82,14 @@ def summary_body(review: Review, *, inline: bool = True) -> str:
         f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
         f"({review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens).",
     ]
-    if review.findings and inline:
+    if review.findings and details is None:
         lines += ["", "| Where | Severity | Finding |", "|---|---|---|"]
         lines += [
             f"| {_location(f)} | {f.severity.value} | {_cell(defang(f.title))} |" for f in review.findings
         ]
     elif review.findings:
-        lines += ["", "GitHub did not accept these as line comments, so they are listed here:"]
+        if details:
+            lines += ["", details]
         for f in review.findings:
             lines += ["", f"#### {_location(f)}", "", comment_body(f)]
     notes = []
@@ -104,7 +110,8 @@ def summary_body(review: Review, *, inline: bool = True) -> str:
 
 def review_payload(review: Review, commit_id: str | None = None, *, inline: bool = True) -> dict[str, Any]:
     """The JSON body for the Reviews API: a ``COMMENT`` review, line comments unless ``inline`` is off."""
-    payload: dict[str, Any] = {"event": "COMMENT", "body": summary_body(review, inline=inline)}
+    body = summary_body(review) if inline else summary_body(review, details=_FALLBACK_LEAD)
+    payload: dict[str, Any] = {"event": "COMMENT", "body": body}
     if commit_id:
         payload["commit_id"] = commit_id  # pin the comments to the commit that was reviewed
     payload["comments"] = (

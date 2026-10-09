@@ -18,7 +18,7 @@ from typing import Any, TextIO
 from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, parse_patch
 from codelens.findings import FindingsFormatError
-from codelens.github import GitHubError, post_review, review_payload
+from codelens.github import GitHubError, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
@@ -51,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     rev.add_argument("--max-findings", type=int, default=MAX_FINDINGS)
     rev.add_argument("--max-prompt-chars", type=int, default=DEFAULT_MAX_PROMPT_CHARS)
     rev.add_argument("--json", action="store_true", help="print the review and its payload as JSON")
+    rev.add_argument(
+        "--summary-file", type=Path, help="append the review as Markdown to this file ($GITHUB_STEP_SUMMARY)"
+    )
     rev.add_argument("--post", action="store_true", help="post the review to GitHub (default: dry run)")
     rev.add_argument(
         "--repo", help="owner/name of the pull request's repository (default: $GITHUB_REPOSITORY)"
@@ -204,6 +207,9 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         for path in provider.written:
             print(f"recorded {path}", file=err)
     payload = review_payload(result, args.commit)
+    if args.summary_file is not None:
+        with args.summary_file.open("a", encoding="utf-8") as fh:
+            fh.write(summary_body(result, details="") + "\n")
     if args.json:
         json.dump(review_json(result, payload), out, indent=2)
         out.write("\n")

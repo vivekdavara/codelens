@@ -234,3 +234,19 @@ def test_prompt_prints_what_the_model_would_see(capsys: pytest.CaptureFixture[st
         out
         == f"=== system ===\n{request.system}\n=== user ===\n{request.prompt}=== key {request.key()} ===\n"
     )
+
+
+def test_summary_file_gets_the_findings_in_full(
+    capsys: pytest.CaptureFixture[str], diff_file: Path, recordings: Path, tmp_path: Path
+) -> None:
+    summary = tmp_path / "step-summary.md"
+    summary.write_text("### earlier step\n")
+    code, _, _ = run(
+        capsys, "review", str(diff_file), "--recordings", str(recordings), "--summary-file", str(summary)
+    )
+    assert code == 0
+    text = summary.read_text()
+    assert text.startswith("### earlier step\n### CodeLens review\n")  # appended, not overwritten
+    assert "#### `svc/pay.py:3`\n\n**Clamping hides the error**" in text
+    assert "GitHub did not accept" not in text
+    assert "Dropped 1 finding(s) that failed validation or anchoring (misquoted 1)." in text

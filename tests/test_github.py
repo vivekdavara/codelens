@@ -157,3 +157,10 @@ def test_repository_names_are_checked(repo: str) -> None:
 def test_a_token_is_required() -> None:
     with pytest.raises(GitHubError, match="GITHUB_TOKEN"):
         post_review(a_review(finding()), "o/r", 3, "", api_url="http://127.0.0.1:9")
+
+
+def test_summary_with_details_writes_each_finding_out() -> None:
+    lines = summary_body(a_review(finding()), details="").splitlines()
+    assert lines[3:] == ["", "#### `svc/pay.py:6`", "", *comment_body(finding()).splitlines()]
+    with_lead = summary_body(a_review(finding()), details="Findings:").splitlines()
+    assert with_lead[3:6] == ["", "Findings:", ""]
