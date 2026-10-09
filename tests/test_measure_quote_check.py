@@ -35,6 +35,6 @@ def test_measurement_on_our_own_sources() -> None:
     rejected = number(r"rejected by the quote check: (\d+)")
     accepted = number(r"    accepted: (\d+)")
     assert inside > 0 and rejected + accepted == inside
-    # A regression guard on the rule itself: on these files it rejects about 95% today (548 of 576), and
-    # loosening it (dropping the quote check, or matching any word of the line) would fall far below 90%.
+    # A regression guard on the rule itself: on these files it rejects about 95%, and loosening it (dropping
+    # the quote check, or matching any word of the line) would fall far below 90%.
     assert rejected / inside >= 0.9

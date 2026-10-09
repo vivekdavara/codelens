@@ -126,13 +126,15 @@ Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `post
 `max-findings` (default 10), `max-prompt-chars` (default 200000), `diff-file`, `github-token`,
 `python-version`. Outputs: `files`, `findings`, `rejected`, `diff-file`. The review
 always goes to the job summary. On a fork's PR there are no secrets, so the review is skipped with a notice
-rather than failing the job; the same happens for the recorded provider without `recordings`.
+rather than failing the job; the same happens for the recorded provider without `recordings`. Only a review
+of the PR's own diff is ever posted (never of a `diff-file`), pinned to the event's head commit; if a newer
+push has landed by the time the diff is fetched, the review is skipped and that push's run reviews it.
 
 ## Results so far
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 289 passing | `.venv/bin/pytest` |
+| Tests | 321 passing | `.venv/bin/pytest` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 97% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Real history | every commit of this repository parses and renders: 48 commits, 122 file diffs, 0 failures at `8646d07` (another local clone, 50 Java/SQL/YAML commits: 0 failures) | `.venv/bin/python scripts/check_history.py [repo]` |
@@ -145,7 +147,7 @@ code: 300 sampled files of the Python 3.11.12 standard library, diffed by git, 5
 3.6% it lets through land on a line whose text equals the intended one (438 blank lines, 118 identical lines,
 72 where the quote is part of the neighbour). Off-by-one alone: 9,046 of 9,396 (96.3%)
 (`scripts/measure_quote_check.py --offsets=-1,1`). A test keeps the rate on this repo's own sources above 90%
-(95.1% today), so loosening the rule fails CI.
+(95.8%, 596 of 622, at `a220a7f`), so loosening the rule fails CI.
 
 **Not measured yet:** review quality. Precision and recall need real model answers on an eval set of PRs with
 seeded bugs (day 3); the only recording in this repo is hand-written, so no quality number is claimed.

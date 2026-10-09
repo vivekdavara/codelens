@@ -146,13 +146,21 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 289 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 321 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
 negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
 repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); and a CI
 job that runs a full review through `action.yml` on the sample PR.
+
+**Did anything find bugs you had missed?** A review of the whole day-2 diff by nine independent agents (line
+by line, removed behaviour, call sites, Python pitfalls, wrappers, reuse, simplification, efficiency,
+altitude), each candidate then re-run by a verifier against the pre-fix commit. Every fix landed with a test
+that reproduces the bug. The worst were: the CI job would have posted the sample fixture's findings onto
+real PRs; the finding cap was applied before the already-posted filter, so new findings could be starved
+forever; anyone could forge the hidden markers; and a non-UTF-8 byte in a diff crashed fingerprinting and
+recording (after the paid model call).
 
 ## What's not done yet
 
