@@ -96,3 +96,12 @@ def test_any_string_the_vendor_sent_can_be_recorded(tmp_path: Path) -> None:
     path = write_recording(tmp_path, REQUEST, completion, "recorded")
     assert RecordedProvider(tmp_path).complete(REQUEST) == completion
     assert [p.name for p in tmp_path.iterdir()] == [path.name]  # no partial file left behind
+
+
+def test_usage_in_a_recording_is_sanitised(tmp_path: Path) -> None:
+    path = write_recording(tmp_path, REQUEST, Completion("{}", HAND_WRITTEN), "recorded")
+    record = json.loads(path.read_text())
+    record["usage"] = {"input_tokens": "12", "output_tokens": -5}
+    path.write_text(json.dumps(record))
+    assert RecordedProvider(tmp_path).complete(REQUEST).usage == Usage(0, 0)
+    assert Usage(True, 3.0) == Usage(0, 0)  # type: ignore[arg-type]

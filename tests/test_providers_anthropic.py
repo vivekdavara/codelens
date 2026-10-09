@@ -155,3 +155,15 @@ def test_configuration_errors() -> None:
 def test_nonsense_token_counts_count_as_zero() -> None:
     usage = {"input_tokens": -5, "cache_read_input_tokens": "9", "output_tokens": True}
     assert parse_message(message(usage=usage)).usage == Usage(0, 0)
+
+
+def test_a_fallback_counts_every_attempts_tokens() -> None:
+    usage = {
+        "input_tokens": 412,
+        "output_tokens": 264,
+        "iterations": [
+            {"type": "message", "input_tokens": 535, "output_tokens": 0},
+            {"type": "fallback_message", "input_tokens": 412, "output_tokens": 264},
+        ],
+    }
+    assert parse_message(message(usage=usage)).usage == Usage(947, 264)

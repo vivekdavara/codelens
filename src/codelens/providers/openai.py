@@ -18,6 +18,8 @@ from codelens.providers.base import (
     ProviderTruncated,
     Request,
     Usage,
+    as_dict,
+    count,
 )
 from codelens.providers.http import DEFAULT_POLICY, RetryPolicy, post_json
 
@@ -83,23 +85,14 @@ class OpenAIProvider:
         return parse_chat_completion(data)
 
 
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _int(value: Any) -> int:
-    """A token count from the response: a non-negative int, or 0 for anything else."""
-    return value if type(value) is int and value >= 0 else 0
-
-
 def parse_chat_completion(data: Any) -> Completion:
     """Turn a Chat Completions response into a :class:`Completion`, or raise if it isn't a usable answer."""
-    completion = _dict(data)
+    completion = as_dict(data)
     choices = completion.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ProviderError("unexpected response from the Chat Completions API (no choices)")
-    choice = _dict(choices[0])
-    message = _dict(choice.get("message"))
+    choice = as_dict(choices[0])
+    message = as_dict(choice.get("message"))
     if isinstance(message.get("refusal"), str) and message["refusal"]:
         raise ProviderRefused(f"the model declined to review this diff: {message['refusal']}")
     finish = choice.get("finish_reason")
@@ -110,10 +103,10 @@ def parse_chat_completion(data: Any) -> Completion:
     text = message.get("content")
     if not isinstance(text, str) or not text:
         raise ProviderError(f"the Chat Completions response has no text (finish reason {finish!r})")
-    usage = _dict(completion.get("usage"))
+    usage = as_dict(completion.get("usage"))
     model = completion.get("model")
     return Completion(
         text,
         model if isinstance(model, str) else "unknown",
-        Usage(_int(usage.get("prompt_tokens")), _int(usage.get("completion_tokens"))),
+        Usage(count(usage.get("prompt_tokens")), count(usage.get("completion_tokens"))),
     )

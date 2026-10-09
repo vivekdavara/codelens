@@ -19,6 +19,8 @@ from codelens.providers.base import (
     ProviderTruncated,
     Request,
     Usage,
+    as_dict,
+    count,
 )
 from codelens.providers.http import DEFAULT_POLICY, RetryPolicy, post_json
 
@@ -98,28 +100,19 @@ class AnthropicProvider:
         return parse_message(data)
 
 
-def _int(value: Any) -> int:
-    """A token count from the response: a non-negative int, or 0 for anything else."""
-    return value if type(value) is int and value >= 0 else 0
-
-
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 def parse_message(data: Any) -> Completion:
     """Turn a Messages API response into a :class:`Completion`, or raise if it isn't a usable answer.
 
     The stop reason is checked before the content: a refusal or a ``max_tokens`` cut-off can still carry
     text, and that text is not a complete review.
     """
-    message = _dict(data)
+    message = as_dict(data)
     content = message.get("content")
     if message.get("type") != "message" or not isinstance(content, list):
         raise ProviderError("unexpected response from the Messages API (not a message)")
     stop = message.get("stop_reason")
     if stop == "refusal":
-        category = _dict(message.get("stop_details")).get("category") or "unspecified"
+        category = as_dict(message.get("stop_details")).get("category") or "unspecified"
         raise ProviderRefused(f"the model declined to review this diff (refusal category: {category})")
     if stop == "max_tokens":
         raise ProviderTruncated("the response hit max_tokens before it finished; raise CODELENS_MAX_TOKENS")
@@ -127,14 +120,16 @@ def parse_message(data: Any) -> Completion:
     texts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"]
     if not texts or not all(isinstance(t, str) for t in texts):
         raise ProviderError(f"the Messages API response has no text (stop reason {stop!r})")
-    usage = _dict(message.get("usage"))
-    # input_tokens excludes cached prompt tokens; count everything the model read.
-    read = sum(
-        _int(usage.get(k)) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-    )
+    usage = as_dict(message.get("usage"))
+    # After a fallback, top-level usage covers only the attempt that answered; usage.iterations lists every
+    # attempt, and each was billed. input_tokens excludes cached prompt tokens, so add those in too.
+    attempts = [as_dict(i) for i in usage.get("iterations") or [] if isinstance(i, dict)] or [usage]
+    reads = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    read = sum(count(attempt.get(key)) for attempt in attempts for key in reads)
+    written = sum(count(attempt.get("output_tokens")) for attempt in attempts)
     model = message.get("model")
     return Completion(
         "".join(str(t) for t in texts),
         model if isinstance(model, str) else "unknown",
-        Usage(read, _int(usage.get("output_tokens"))),
+        Usage(read, written),
     )

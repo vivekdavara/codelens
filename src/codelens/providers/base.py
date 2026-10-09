@@ -23,6 +23,8 @@ __all__ = [
     "RecordingMissing",
     "Request",
     "Usage",
+    "as_dict",
+    "count",
 ]
 
 
@@ -47,10 +49,26 @@ class Request:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    """``value`` if it is a JSON object, else an empty one: for reading untrusted response fields."""
+    return value if isinstance(value, dict) else {}
+
+
+def count(value: Any) -> int:
+    """A token count: a non-negative int (not a bool), or 0 for anything else."""
+    return value if type(value) is int and value >= 0 else 0
+
+
 @dataclass(frozen=True)
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        # Counts arrive from vendor JSON and from recordings on disk; anything but a non-negative int is 0,
+        # so a bad value can neither print as "-5 tokens" nor crash the summary's number formatting.
+        object.__setattr__(self, "input_tokens", count(self.input_tokens))
+        object.__setattr__(self, "output_tokens", count(self.output_tokens))
 
 
 @dataclass(frozen=True)
