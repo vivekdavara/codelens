@@ -98,8 +98,10 @@ GITHUB_TOKEN=... codelens review pr.diff --provider anthropic --post --repo owne
 One review per run (`event: COMMENT`), so the author gets one notification. Posting is never retried (the
 Reviews API has no idempotency key). If GitHub rejects the line comments with a 422, the review is posted once
 more with the findings in its body. Findings an earlier CodeLens review already posted on the PR (matched by
-an invisible fingerprint of file and line text) are not posted again, so pushing more commits doesn't repeat
-old comments; a review with nothing new is not posted.
+an invisible fingerprint of file, line text and position among identical lines, read only from CodeLens's
+own comments) are not posted again, so pushing more commits doesn't repeat old comments; a review with
+nothing new is not posted. Set `CODELENS_GITHUB_LOGIN` if CodeLens posts as something other than
+`github-actions[bot]`.
 
 ### GitHub Action
 

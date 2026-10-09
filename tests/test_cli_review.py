@@ -173,7 +173,8 @@ def test_post_sends_one_review(
     seen = fake_server.requests[-1]
     assert seen.path == "/repos/o/r/pulls/3/reviews" and seen.body["commit_id"] == "c0"
     # The same review again, after another push: the finding is already on the PR.
-    fake_server.reply(Reply(200, seen.body["comments"]), Reply(200, []))
+    earlier = [{"user": {"login": "github-actions[bot]"}, **comment} for comment in seen.body["comments"]]
+    fake_server.reply(Reply(200, earlier), Reply(200, []))
     code, _, err = run(capsys, *args)
     assert code == 0 and "all 1 findings were already posted by an earlier review: nothing posted" in err
     assert [r.method for r in fake_server.requests] == ["GET", "GET", "POST", "GET", "GET"]
@@ -335,7 +336,7 @@ def test_post_reports_findings_it_did_not_repeat(
     review_args = ("review", str(diff_file), "--recordings", str(recs))
     _, out, _ = run(capsys, *review_args, "--json")
     earlier = [
-        {"body": json.loads(out)["payload"]["comments"][0]["body"]}
+        {"user": {"login": "github-actions[bot]"}, "body": json.loads(out)["payload"]["comments"][0]["body"]}
     ]  # line 3's comment is already there
     fake_server.reply(Reply(200, earlier), Reply(200, []), Reply(200, {"id": 5, "html_url": "u"}))
     code, _, err = run(capsys, *review_args, "--post", "--repo", "o/r", "--pr", "3")

@@ -117,11 +117,17 @@ list everything that was dropped, capped or skipped.
 created the review, a retry would post it twice. Reads (GETs) do retry.
 
 **What happens when the author pushes again?** The action runs again and would repeat every finding. Each
-posted comment ends with an invisible `<!-- codelens:<fingerprint> -->`, a hash of the file path and the
-line's full text. Before posting, `posted_fingerprints` reads the PR's comments and review bodies (paginated,
-following `rel="next"` only on the same host because the token goes with it) and drops findings already
-there. Line numbers aren't in the fingerprint because they move; titles aren't because the model rewords
-them. Trade-off: one comment per line of code per PR.
+posted comment ends with an invisible `<!-- codelens:<fingerprint> -->`, a hash of the file path, the
+line's full text and its `occurrence` (how many identical lines sit above it in the diff, so two
+`return None` lines don't collide). Before posting, `posted_fingerprints` reads the PR's comments and review
+bodies (paginated, following `rel="next"` only on the same host because the token goes with it), drops the
+findings already there, and only then applies the cap. Line numbers aren't in the fingerprint because they
+move; titles aren't because the model rewords them. Trade-off: one comment per line of code per PR.
+
+**Couldn't the PR author fake those markers?** They could compute any fingerprint from the public diff, and
+an early version trusted markers in anyone's comment: a review agent found that one comment from the author
+could silence CodeLens on every line they chose. Now only markers in comments by CodeLens's own login
+(`github-actions[bot]`) count, and `<!--` in model text is escaped so a steered model can't plant one.
 
 **And if GitHub rejects the line comments?** A 422 usually means the PR moved on after the diff was fetched.
 The review is posted once more with the findings written into its body.

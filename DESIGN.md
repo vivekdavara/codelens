@@ -291,17 +291,24 @@ gets one notification instead of one per finding, and a review with no findings 
   the body instead.
 - **No repeats across pushes.** The action runs on every push to a PR, and each run would otherwise post the
   same findings again. Every posted finding carries an invisible `<!-- codelens:<fingerprint> -->` marker,
-  where the fingerprint is a hash of the file path and the cited line's full text (kept findings carry the
-  line's full text, whatever part of it the model quoted). Before posting, CodeLens reads the PR's review
-  comments and review bodies (paginated GETs, up to 10 pages of 100 each, following `rel="next"` only on the
-  same API host, since the token goes with it) and leaves out findings whose fingerprint is already there;
-  the summary says how many. If nothing new is left, nothing is posted. Line numbers are left out of the
-  fingerprint because they move when lines are added above, and the title because a model rewords the same
-  issue from run to run; the cost is that CodeLens comments on a given line of code once per PR, even if a
-  later run finds a different problem there.
+  a hash of the file path, the cited line's full text (kept findings carry it, whatever part the model
+  quoted) and the line's `occurrence`, the number of identical lines above it in the diff, so two
+  `return None` lines or two blank lines stay apart. Line numbers are left out because they move when lines
+  are added above, and the title because a model rewords the same issue from run to run. Before posting,
+  CodeLens reads the PR's review comments and review bodies (paginated GETs, up to 10 pages of 100 each,
+  following `rel="next"` only on the same API host, since the token goes with it), drops the findings
+  already there from the whole ranked list, and only then applies the cap, so findings an earlier run
+  posted don't keep using up the cap. Only markers in comments by CodeLens's own login count
+  (`github-actions[bot]` by default, `CODELENS_GITHUB_LOGIN` otherwise): anyone can compute a fingerprint
+  from the public diff, and a marker in the PR author's comment would otherwise silence CodeLens on any line
+  they chose. Model text can't plant one either, because `<!--` in it is escaped. If nothing new is left,
+  nothing is posted.
 - **Defanged output.** Model-written text can be steered by the diff, so `@mentions` outside code spans and
   fences get a word joiner after the `@` (GitHub then doesn't ping anyone); code is left alone so a pasted
-  `@decorator` stays valid. The repository name is checked against `owner/name` before it becomes a URL path.
+  `@decorator` stays valid. Only real code counts: a fence must open at the start of a line and an inline
+  span must not start at an escaped backtick. File paths (which come from the PR) are rendered as inline
+  code with backticks, control characters and mentions neutralised. The repository name is checked against
+  `owner/name` before it becomes a URL path.
 - **Dry run by default in the CLI**; `--post` with `--repo`/`--pr` and `GITHUB_TOKEN` posts.
 
 The action runs the review on `pull_request` (never `pull_request_target`, which runs fork code with write

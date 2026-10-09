@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -35,8 +37,13 @@ __all__ = [
 API_VERSION = "2022-11-28"
 _REPO = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _NO_RETRY = RetryPolicy(attempts=1)
-_CODE = re.compile(r"(```.*?```|`[^`\n]*`)", re.DOTALL)
+# A fence opens and closes at the start of a line; an inline code span starts at a backtick that isn't
+# escaped. Anything else that looks like code to a naive scan (an escaped backtick, a stray ```) is text to
+# GitHub, so mentions in it would be live.
+_CODE = re.compile(r"(^```.*?^```|(?<![\\`])`[^`\n]+`)", re.DOTALL | re.MULTILINE)
 _MENTION = re.compile(r"@(?=[A-Za-z0-9])")
+DEFAULT_AUTHOR = "github-actions[bot]"
+"""The login CodeLens posts as with the Actions token; only its comments' markers count as already posted."""
 _MARKER = re.compile(r"<!-- codelens:([0-9a-f]{16}) -->")
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 MAX_PAGES = 10
@@ -61,17 +68,25 @@ class Posted:
 
 
 def defang(text: str) -> str:
-    """Break ``@mentions`` outside code, so model-written text (steerable by the diff) can't ping people.
+    """Make model-written text (steerable by the diff) safe to post.
 
-    A word joiner after the ``@`` stops GitHub from linking the mention; code spans and fences are left
-    alone because GitHub never links mentions there and a pasted ``@decorator`` must stay valid code.
+    ``@mentions`` outside code get a word joiner after the ``@``, which stops GitHub from linking them; code
+    spans and fences are left alone because GitHub never links mentions there and a pasted ``@decorator``
+    must stay valid code. ``<!--`` is escaped everywhere, so the only HTML comments in a posted body are
+    CodeLens's own fingerprint markers.
     """
-    parts = _CODE.split(text)
+    parts = _CODE.split(text.replace("<!--", "&lt;!--"))
     return "".join(part if i % 2 else _MENTION.sub("@\u2060", part) for i, part in enumerate(parts))
 
 
+def _path(path: str) -> str:
+    """A file path as inline code that can't break out of its span or ping anyone (paths come from the PR)."""
+    clean = "".join("?" if ch < " " or ch in "`\x7f\u2028\u2029" else ch for ch in path)
+    return f"`{_MENTION.sub('@' + chr(0x2060), clean)}`"
+
+
 def _location(finding: Finding) -> str:
-    return f"`{finding.path}:{finding.line}`"
+    return _path(f"{finding.path}:{finding.line}")
 
 
 def _cell(text: str) -> str:
@@ -80,13 +95,14 @@ def _cell(text: str) -> str:
 
 
 def fingerprint(finding: Finding) -> str:
-    """Identifies a finding across runs by its file and its line's text, not the line number.
+    """Identifies a finding across runs by its file, its line's text and which of the identical lines it is.
 
     Line numbers move when lines are added above, and a model words the same issue differently from run to
-    run, so neither identifies it. The rule this gives: CodeLens comments on a given line of code once per PR.
+    run, so neither identifies it. ``occurrence`` keeps two identical lines (two ``return None``, two blank
+    lines) apart. The rule this gives: CodeLens comments on a given line of code once per PR.
     """
-    key = f"{finding.path}\0{' '.join(finding.quote.split())}"
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    key = f"{finding.path}\0{' '.join(finding.quote.split())}\0{finding.occurrence}"
+    return hashlib.sha256(key.encode("utf-8", errors="surrogatepass")).hexdigest()[:16]
 
 
 def comment_body(finding: Finding) -> str:
@@ -144,7 +160,7 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     if review.repeated:
         notes.append(f"Not repeated: {review.repeated} finding(s) an earlier CodeLens review already posted.")
     if review.skipped:
-        skipped = ", ".join(f"`{path}` ({reason})" for path, reason in review.skipped)
+        skipped = ", ".join(f"{_path(path)} ({reason})" for path, reason in review.skipped)
         notes.append(f"Not reviewed: {skipped}.")
     if notes:
         lines += ["", *notes]
@@ -194,10 +210,21 @@ def _next_page(link: str | None, base: str) -> str | None:
     return match.group(1)
 
 
-def posted_fingerprints(repo: str, number: int, token: str, *, api_url: str, timeout: float) -> set[str]:
-    """Fingerprints of the findings CodeLens already posted on the PR: in line comments and review bodies.
+def posted_fingerprints(
+    repo: str,
+    number: int,
+    token: str,
+    *,
+    api_url: str,
+    timeout: float,
+    author: str = DEFAULT_AUTHOR,
+    sleep: Callable[[float], None] = time.sleep,
+) -> set[str]:
+    """Fingerprints of the findings ``author`` already posted on the PR, in line comments and review bodies.
 
-    Reading is a GET, so unlike posting it keeps the default retries.
+    Only ``author``'s markers count: anyone can compute a fingerprint from the public diff, so a marker in
+    the PR author's own comment would otherwise silence CodeLens on any line they chose. Reading is a GET,
+    so unlike posting it keeps the default retries.
     """
     base = api_url.rstrip("/")
     found: set[str] = set()
@@ -206,10 +233,13 @@ def posted_fingerprints(repo: str, number: int, token: str, *, api_url: str, tim
         for _ in range(MAX_PAGES):
             if url is None:
                 break
-            data, headers = get_json(url, _headers(token), timeout=timeout)
+            data, headers = get_json(url, _headers(token), timeout=timeout, sleep=sleep)
             for item in data if isinstance(data, list) else []:
-                body = item.get("body") if isinstance(item, dict) else None
-                if isinstance(body, str):
+                if not isinstance(item, dict):
+                    continue
+                user, body = item.get("user"), item.get("body")
+                login = user.get("login") if isinstance(user, dict) else None
+                if login == author and isinstance(body, str):
                     found.update(_MARKER.findall(body))
             url = _next_page(headers.get("link"), base)
     return found
@@ -224,6 +254,8 @@ def post_review(
     commit_id: str | None = None,
     api_url: str = "https://api.github.com",
     timeout: float = 30.0,
+    author: str = DEFAULT_AUTHOR,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Posted:
     """Post ``review`` to pull request ``repo#number``, leaving out findings already posted there.
 
@@ -237,7 +269,9 @@ def post_review(
         raise GitHubError("posting a review needs a GitHub token (GITHUB_TOKEN)")
     url = f"{api_url.rstrip('/')}/repos/{repo}/pulls/{number}/reviews"
     try:
-        already = posted_fingerprints(repo, number, token, api_url=api_url, timeout=timeout)
+        already = posted_fingerprints(
+            repo, number, token, api_url=api_url, timeout=timeout, author=author, sleep=sleep
+        )
     except ProviderHTTPError as exc:
         raise GitHubError(f"could not read the PR's earlier comments: {exc}{_hint(exc)}") from None
     except ProviderError as exc:

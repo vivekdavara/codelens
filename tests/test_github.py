@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -64,6 +65,11 @@ def test_comment_body() -> None:
         "<sub>CodeLens · high · bug · confidence 0.80</sub>\n"
         f"<!-- codelens:{fingerprint(finding())} -->"
     )
+
+
+def bot(body: str, login: str = "github-actions[bot]") -> dict[str, Any]:
+    """A PR comment as the GitHub API lists it, written by ``login``."""
+    return {"user": {"login": login, "type": "Bot"}, "body": body}
 
 
 def no_earlier_comments(server: FakeServer) -> None:
@@ -204,7 +210,15 @@ def test_permission_errors_say_what_to_fix(fake_server: FakeServer, status: int,
 
 def test_an_unreachable_github_is_reported_as_such() -> None:
     with pytest.raises(GitHubError, match="could not reach GitHub"):
-        post_review(a_review(finding()), "o/r", 3, TOKEN, api_url="http://127.0.0.1:9", timeout=2)
+        post_review(
+            a_review(finding()),
+            "o/r",
+            3,
+            TOKEN,
+            api_url="http://127.0.0.1:9",
+            timeout=2,
+            sleep=lambda _: None,
+        )
 
 
 def test_fingerprints_ignore_line_numbers_and_whitespace_but_not_path_or_text() -> None:
@@ -225,11 +239,11 @@ def test_earlier_fingerprints_come_from_comments_and_review_bodies_across_pages(
     fake_server.reply(
         Reply(
             200,
-            [{"body": f"x\n<!-- codelens:{a} -->"}, {"body": None}, "junk"],
+            [bot(f"x\n<!-- codelens:{a} -->"), {"body": None}, "junk"],
             {"Link": f'<{page2}>; rel="next"'},
         ),
-        Reply(200, [{"body": f"<!-- codelens:{b} -->"}]),
-        Reply(200, [{"body": f"#### `x:1`\n<!-- codelens:{c} -->"}, {"body": "<!-- codelens:nothex -->"}]),
+        Reply(200, [bot(f"<!-- codelens:{b} -->")]),
+        Reply(200, [bot(f"#### `x:1`\n<!-- codelens:{c} -->"), bot("<!-- codelens:nothex -->")]),
     )
     assert posted_fingerprints("o/r", 3, TOKEN, api_url=fake_server.url, timeout=5) == {a, b, c}
     assert [r.path for r in fake_server.requests] == [
@@ -250,7 +264,7 @@ def test_a_next_page_on_another_host_is_not_followed(fake_server: FakeServer) ->
 def test_findings_already_on_the_pr_are_not_posted_again(fake_server: FakeServer) -> None:
     old, new = finding(), finding(7, quote="net = 0", title="Silent clamp")
     fake_server.reply(
-        Reply(200, [{"body": comment_body(old)}]), Reply(200, []), Reply(200, {"id": 90, "html_url": "u"})
+        Reply(200, [bot(comment_body(old))]), Reply(200, []), Reply(200, {"id": 90, "html_url": "u"})
     )
     posted = post_review(a_review(old, new), "o/r", 3, TOKEN, api_url=fake_server.url)
     assert (posted.id, posted.comments, posted.repeated) == (90, 1, 1)
@@ -260,7 +274,7 @@ def test_findings_already_on_the_pr_are_not_posted_again(fake_server: FakeServer
 
 
 def test_nothing_is_posted_when_every_finding_is_already_there(fake_server: FakeServer) -> None:
-    fake_server.reply(Reply(200, [{"body": comment_body(finding())}]), Reply(200, []))
+    fake_server.reply(Reply(200, [bot(comment_body(finding()))]), Reply(200, []))
     posted = post_review(a_review(finding(line=9)), "o/r", 3, TOKEN, api_url=fake_server.url)
     assert (posted.id, posted.repeated) == (None, 1)
     assert [r.method for r in fake_server.requests] == ["GET", "GET"]
@@ -297,9 +311,66 @@ def test_the_cap_applies_after_repeats_are_dropped(fake_server: FakeServer) -> N
     posted_before = finding()
     below_the_cap = finding(7, quote="net = 0", severity=Severity.LOW, title="Silent clamp")
     review = a_review(posted_before, held=[below_the_cap], max_findings=1, over_cap=1)
-    fake_server.reply(Reply(200, [{"body": comment_body(posted_before)}]), Reply(200, []))
+    fake_server.reply(Reply(200, [bot(comment_body(posted_before))]), Reply(200, []))
     fake_server.reply(Reply(200, {"id": 91, "html_url": "u"}))
     posted = post_review(review, "o/r", 3, TOKEN, api_url=fake_server.url)
     assert (posted.id, posted.comments, posted.repeated) == (91, 1, 1)
     assert [c["line"] for c in fake_server.requests[-1].body["comments"]] == [7]
     assert "over the cap" not in fake_server.requests[-1].body["body"]
+
+
+def test_markers_from_anyone_but_codelens_are_ignored(fake_server: FakeServer) -> None:
+    # The PR author can compute any fingerprint from the public diff and hide it in a comment of their own.
+    forged = {"user": {"login": "pr-author", "type": "User"}, "body": comment_body(finding())}
+    fake_server.reply(Reply(200, [forged]), Reply(200, []), Reply(200, {"id": 92, "html_url": "u"}))
+    posted = post_review(a_review(finding()), "o/r", 3, TOKEN, api_url=fake_server.url)
+    assert (posted.id, posted.comments, posted.repeated) == (92, 1, 0)
+
+
+def test_another_login_can_be_named(fake_server: FakeServer) -> None:
+    fake_server.reply(Reply(200, [bot(comment_body(finding()), login="my-app[bot]")]), Reply(200, []))
+    assert posted_fingerprints("o/r", 3, TOKEN, api_url=fake_server.url, timeout=5, author="my-app[bot]") == {
+        fingerprint(finding())
+    }
+
+
+def test_model_text_cannot_plant_a_marker() -> None:
+    planted = finding(body=f"Fine. <!-- codelens:{fingerprint(finding(line=9, quote='other'))} -->")
+    body = comment_body(planted)
+    assert body.count("<!--") == 1 and body.endswith(f"<!-- codelens:{fingerprint(planted)} -->")
+
+
+def test_identical_lines_get_different_fingerprints() -> None:
+    from codelens.diff import parse_patch
+    from codelens.findings import check_response
+
+    patch = parse_patch("--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,4 @@\n+return None\n+x = 1\n+return None\n+\n")
+
+    def item(line: int, quote: str) -> dict[str, Any]:
+        return {
+            "path": "a.py",
+            "line": line,
+            "quote": quote,
+            "severity": "low",
+            "category": "bug",
+            "title": "t",
+            "body": "b",
+            "confidence": 0.5,
+        }
+
+    first, second = check_response(
+        json.dumps({"findings": [item(1, "return None"), item(3, "return None")]}), patch
+    )[0]
+    assert (first.occurrence, second.occurrence) == (0, 1)
+    assert fingerprint(first) != fingerprint(second)
+
+
+def test_paths_render_as_inline_code_that_cannot_break_out() -> None:
+    review = a_review(skipped=[("a`@victim`.png", "binary file"), ("z\n\n@boss.bin", "binary file")])
+    notes = summary_body(review).splitlines()[-1]
+    assert notes == "Not reviewed: `a?@\u2060victim?.png` (binary file), `z??@\u2060boss.bin` (binary file)."
+
+
+def test_escaped_backticks_and_stray_fences_are_not_code() -> None:
+    assert defang("Ask \\`@octocat\\` now") == "Ask \\`@\u2060octocat\\` now"
+    assert defang("A literal ``` here.\n\n@octocat") == "A literal ``` here.\n\n@\u2060octocat"

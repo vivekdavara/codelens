@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
-from codelens.diff import PatchSet, Side
+from codelens.diff import DiffLine, FileDiff, PatchSet, Side
 
 __all__ = [
     "FINDINGS_SCHEMA",
@@ -65,6 +65,9 @@ class Finding:
     """The cited line's text as the model copied it; once anchored, the line's full text from the diff."""
     side: Side = Side.RIGHT
     source: str = "llm"
+    occurrence: int = 0
+    """Once anchored: how many lines above this one in the file's diff have the same text. With the path
+    and the quote it identifies the line across runs, where its number would move (github.fingerprint)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +81,7 @@ class Finding:
             "confidence": self.confidence,
             "quote": self.quote,
             "source": self.source,
+            "occurrence": self.occurrence,
         }
 
 
@@ -224,14 +228,7 @@ def _normalise(text: str) -> str:
     return " ".join(text.split())
 
 
-def anchor_finding(finding: Finding, patch: PatchSet, index: int = -1) -> Rejection | None:
-    """``None`` if the finding lands on a diff line whose text matches its quote; otherwise why not.
-
-    The finding must name a file in the diff and a line :meth:`FileDiff.anchor` accepts, and its ``quote``
-    must appear in that line (whitespace-insensitive; a blank line needs a blank quote). The quote check
-    catches the commonest model error, an off-by-some line number that still lands inside a hunk, which
-    anchoring alone would accept.
-    """
+def _locate(finding: Finding, patch: PatchSet, index: int) -> tuple[FileDiff, DiffLine] | Rejection:
     file = patch.get(finding.path)
     if file is None:
         return Rejection(index, "unanchored", f"{finding.path} is not in the diff")
@@ -247,27 +244,53 @@ def anchor_finding(finding: Finding, patch: PatchSet, index: int = -1) -> Reject
             "misquoted",
             f"{finding.path}:{finding.line} is {diff_line.content.strip()!r}, not {finding.quote.strip()!r}",
         )
-    return None
+    return file, diff_line
+
+
+def anchor_finding(finding: Finding, patch: PatchSet, index: int = -1) -> Rejection | None:
+    """``None`` if the finding lands on a diff line whose text matches its quote; otherwise why not.
+
+    The finding must name a file in the diff and a line :meth:`FileDiff.anchor` accepts, and its ``quote``
+    must appear in that line (whitespace-insensitive; a blank line needs a blank quote). The quote check
+    catches the commonest model error, an off-by-some line number that still lands inside a hunk, which
+    anchoring alone would accept.
+    """
+    located = _locate(finding, patch, index)
+    return located if isinstance(located, Rejection) else None
+
+
+def _occurrence(file: FileDiff, target: DiffLine, side: Side) -> int:
+    """How many lines of ``file``'s diff, on ``side`` and above ``target``, have the same text as it."""
+
+    def number(line: DiffLine) -> int | None:
+        return line.new_lineno if side is Side.RIGHT else line.old_lineno
+
+    limit, text = number(target), _normalise(target.content)
+    assert limit is not None  # target was anchored on this side
+    return sum(
+        1
+        for line in file.lines()
+        if (n := number(line)) is not None and n < limit and _normalise(line.content) == text
+    )
 
 
 def check_response(text: str, patch: PatchSet) -> tuple[list[Finding], list[Rejection]]:
     """Validate and anchor every finding in a model response, in response order.
 
     Returns the findings that pass both checks, each with ``quote`` set to the full text of its line (a model
-    may quote part of it), and a :class:`Rejection` for each one that doesn't; a rejection's ``index`` is the
-    item's position in the response's ``findings`` array.
+    may quote part of it) and ``occurrence`` to the number of identical lines above it in the diff, and a
+    :class:`Rejection` for each one that doesn't; a rejection's ``index`` is the item's position in the
+    response's ``findings`` array.
     """
     findings: list[Finding] = []
     rejections: list[Rejection] = []
     for index, item in enumerate(_items(text)):
         result = _validate(index, item)
-        if isinstance(result, Finding):
-            miss = anchor_finding(result, patch, index)
-            if miss is None:
-                file = patch.get(result.path)
-                line = file.anchor(result.line, result.side) if file is not None else None
-                findings.append(replace(result, quote=line.content) if line is not None else result)
-                continue
-            result = miss
-        rejections.append(result)
+        located = _locate(result, patch, index) if isinstance(result, Finding) else result
+        if isinstance(located, Rejection):
+            rejections.append(located)
+            continue
+        assert isinstance(result, Finding)
+        file, line = located
+        findings.append(replace(result, quote=line.content, occurrence=_occurrence(file, line, result.side)))
     return findings, rejections

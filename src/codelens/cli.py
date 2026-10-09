@@ -18,7 +18,7 @@ from typing import Any, TextIO
 from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, parse_patch
 from codelens.findings import FindingsFormatError
-from codelens.github import GitHubError, post_review, review_payload, summary_body
+from codelens.github import DEFAULT_AUTHOR, GitHubError, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
@@ -243,6 +243,7 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
             os.environ.get("GITHUB_TOKEN", ""),
             commit_id=args.commit,
             api_url=os.environ.get("GITHUB_API_URL") or "https://api.github.com",
+            author=os.environ.get("CODELENS_GITHUB_LOGIN") or DEFAULT_AUTHOR,
         )
     except GitHubError as exc:
         print(f"codelens: {exc}", file=err)
