@@ -26,6 +26,17 @@ from codelens.review import Review, review
 _STATUS_LETTER = {"added": "A", "deleted": "D", "modified": "M", "renamed": "R", "copied": "C"}
 
 
+def positive_int(text: str) -> int:
+    """argparse type for limits: a slice by a negative cap would silently keep all but the last findings."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, not {text!r}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codelens", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -36,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prompt = sub.add_parser("prompt", help="print the system prompt and user prompt a review would send")
     prompt.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
-    prompt.add_argument("--max-prompt-chars", type=int, default=DEFAULT_MAX_PROMPT_CHARS)
+    prompt.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
 
     rev = sub.add_parser("review", help="review a diff and print the review (or post it with --post)")
     rev.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
@@ -48,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rev.add_argument("--recordings", type=Path, help="recordings directory (default: .codelens/recordings)")
     rev.add_argument("--record", action="store_true", help="save the live provider's answer to --recordings")
-    rev.add_argument("--max-findings", type=int, default=MAX_FINDINGS)
-    rev.add_argument("--max-prompt-chars", type=int, default=DEFAULT_MAX_PROMPT_CHARS)
+    rev.add_argument("--max-findings", type=positive_int, default=MAX_FINDINGS)
+    rev.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
     rev.add_argument("--json", action="store_true", help="print the review and its payload as JSON")
     rev.add_argument(
         "--summary-file", type=Path, help="append the review as Markdown to this file ($GITHUB_STEP_SUMMARY)"
@@ -58,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     rev.add_argument(
         "--repo", help="owner/name of the pull request's repository (default: $GITHUB_REPOSITORY)"
     )
-    rev.add_argument("--pr", type=int, help="pull request number to post to")
+    rev.add_argument("--pr", type=positive_int, help="pull request number to post to")
     rev.add_argument("--commit", help="head commit SHA the review is for")
     return parser
 

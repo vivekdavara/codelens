@@ -250,3 +250,35 @@ def test_summary_file_gets_the_findings_in_full(
     assert "#### `svc/pay.py:3`\n\n**Clamping hides the error**" in text
     assert "GitHub did not accept" not in text
     assert "Dropped 1 finding(s) that failed validation or anchoring (misquoted 1)." in text
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--max-findings", "0"),
+        ("--max-findings", "-1"),
+        ("--max-prompt-chars", "lots"),
+        ("--pr", "0"),
+    ],
+)
+def test_limits_must_be_positive(
+    capsys: pytest.CaptureFixture[str], diff_file: Path, args: tuple[str, str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["review", str(diff_file), *args])
+    assert exc.value.code == 2
+    assert "must be a positive integer" in capsys.readouterr().err
+
+
+def test_max_findings_caps_the_review(
+    capsys: pytest.CaptureFixture[str], diff_file: Path, tmp_path: Path
+) -> None:
+    recs = tmp_path / "recs"
+    two = json.dumps(
+        {"findings": [FINDING, {**FINDING, "line": 5, "quote": "return net", "severity": "low"}]}
+    )
+    write_recording(recs, build_prompt(parse_patch(DIFF)).request, Completion(two, HAND_WRITTEN), "recorded")
+    code, out, _ = run(capsys, "review", str(diff_file), "--recordings", str(recs), "--max-findings", "1")
+    assert code == 0
+    assert out.splitlines()[0].startswith("svc/pay.py:3  high")
+    assert "over the cap: 1 lower-ranked findings left out" in out

@@ -54,6 +54,8 @@ def review(
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
+    if max_findings < 1 or max_prompt_chars < 1:
+        raise ValueError("max_findings and max_prompt_chars must be positive")
     prompt = build_prompt(patch, max_prompt_chars)
     result = Review(
         [], skipped=prompt.skipped, reviewed=[f.path for f in prompt.files], provider=provider.name

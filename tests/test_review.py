@@ -142,3 +142,9 @@ def test_provider_errors_propagate() -> None:
 
     with pytest.raises(ProviderError, match="vendor unavailable"):
         review(PATCH, Down())
+
+
+@pytest.mark.parametrize(("cap", "budget"), [(0, 1000), (-1, 1000), (5, 0)])
+def test_limits_must_be_positive(cap: int, budget: int) -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        review(PATCH, Scripted(answer()), max_findings=cap, max_prompt_chars=budget)
