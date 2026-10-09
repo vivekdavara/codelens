@@ -25,9 +25,11 @@ from urllib.parse import urlsplit
 
 from codelens.providers.base import ProviderError, ProviderHTTPError
 
-__all__ = ["DEFAULT_POLICY", "RETRY_STATUSES", "RetryPolicy", "post_json"]
+__all__ = ["DEFAULT_POLICY", "MAX_RESPONSE_BYTES", "RETRY_STATUSES", "RetryPolicy", "post_json"]
 
 RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+"""A review response is a few kilobytes; anything near this is a misbehaving endpoint, not an answer."""
 
 
 @dataclass(frozen=True)
@@ -131,12 +133,12 @@ def post_json(
         request = urllib.request.Request(url, data=data, headers=all_headers, method="POST")
         try:
             with _OPENER.open(request, timeout=timeout) as response:
-                raw = response.read()
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
                 response_headers = {k.lower(): v for k, v in response.headers.items()}
         except urllib.error.HTTPError as exc:
             error_headers = {k.lower(): v for k, v in exc.headers.items()}
             with exc:
-                error_body = exc.read()
+                error_body = exc.read(MAX_RESPONSE_BYTES)
             if attempt == policy.attempts or not _should_retry(exc.code, error_headers):
                 message, error_type = _error_details(error_body)
                 raise ProviderHTTPError(exc.code, message, error_type, _request_id(error_headers)) from None
@@ -149,6 +151,10 @@ def post_json(
                 raise ProviderError(f"cannot reach {host} after {attempt} attempts: {reason}") from None
             sleep(_backoff(attempt, policy, rng))
             continue
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ProviderError(
+                f"{host} sent a response over {MAX_RESPONSE_BYTES:,} bytes; refusing to read it"
+            )
         try:
             return json.loads(raw), response_headers
         except ValueError:

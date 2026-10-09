@@ -6,7 +6,7 @@ import pytest
 from conftest import FakeServer, Reply
 
 from codelens.providers import ProviderError, ProviderHTTPError
-from codelens.providers.http import RetryPolicy, _backoff, post_json
+from codelens.providers.http import MAX_RESPONSE_BYTES, RetryPolicy, _backoff, post_json
 
 ANTHROPIC_429 = {
     "type": "error",
@@ -160,3 +160,16 @@ def test_backoff_doubles_up_to_the_cap_with_bounded_jitter() -> None:
     policy = RetryPolicy(base_delay=1.0, max_delay=5.0)
     assert [_backoff(n, policy, lambda: 0.0) for n in range(1, 6)] == [1.0, 2.0, 4.0, 5.0, 5.0]
     assert _backoff(2, policy, lambda: 1.0) == 1.5  # at most 25% shorter
+
+
+def test_an_oversized_response_is_refused(fake_server: FakeServer) -> None:
+    fake_server.reply(Reply(200, b"[" + b"0," * (MAX_RESPONSE_BYTES // 2) + b"0]"))
+    with pytest.raises(ProviderError, match="over 10,485,760 bytes"):
+        call(fake_server, [])
+
+
+def test_an_oversized_error_body_is_cut_short(fake_server: FakeServer) -> None:
+    fake_server.reply(Reply(400, b"x" * (MAX_RESPONSE_BYTES + 100)))
+    with pytest.raises(ProviderHTTPError) as exc:
+        call(fake_server, [])
+    assert len(str(exc.value)) < 400  # a non-JSON body is quoted only up to 300 characters
