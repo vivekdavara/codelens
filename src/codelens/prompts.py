@@ -83,6 +83,33 @@ def render_file(file: FileDiff) -> str:
     return "\n".join(blocks).translate(_LINE_BREAKS)
 
 
+# Machine-written files: their diffs are often the largest in a PR and nobody reviews them line by line, so
+# showing them would spend the prompt budget that the code needs.
+LOCKFILES = frozenset(
+    {
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lockb",
+        "poetry.lock",
+        "uv.lock",
+        "Pipfile.lock",
+        "pdm.lock",
+        "Cargo.lock",
+        "Gemfile.lock",
+        "composer.lock",
+        "go.sum",
+        "packages.lock.json",
+        "Podfile.lock",
+        "pubspec.lock",
+        "mix.lock",
+        "flake.lock",
+    }
+)
+_GENERATED_SUFFIXES = (".min.js", ".min.css", ".map", ".pb.go", "_pb2.py", "_pb2.pyi", ".snap")
+
+
 def _skip_reason(file: FileDiff) -> str | None:
     if file.is_binary:
         return "binary file"
@@ -92,6 +119,11 @@ def _skip_reason(file: FileDiff) -> str | None:
         return "no added lines"
     if _unsafe(file.old_path) or _unsafe(file.new_path):
         return "control characters in the path"
+    name = file.path.rsplit("/", 1)[-1]
+    if name in LOCKFILES:
+        return "lock file"
+    if name.endswith(_GENERATED_SUFFIXES):
+        return "generated file"
     return None
 
 

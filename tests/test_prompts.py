@@ -144,3 +144,29 @@ def test_paths_with_unicode_line_separators_are_not_shown() -> None:
     text = "--- a/a\u2028b.py\n+++ b/a\u2028b.py\n@@ -0,0 +1 @@\n+x = 1\n"
     prompt = build_prompt(parse_patch(text))
     assert prompt.files == [] and prompt.skipped == [("a\u2028b.py", "control characters in the path")]
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("package-lock.json", "lock file"),
+        ("web/yarn.lock", "lock file"),
+        ("uv.lock", "lock file"),
+        ("go.sum", "lock file"),
+        ("static/app.min.js", "generated file"),
+        ("api/v1/service_pb2.py", "generated file"),
+        ("tests/__snapshots__/view.test.ts.snap", "generated file"),
+    ],
+)
+def test_lock_and_generated_files_are_not_shown(path: str, reason: str) -> None:
+    text = (
+        f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+x\n--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+y = 2\n"
+    )
+    prompt = build_prompt(parse_patch(text))
+    assert [f.path for f in prompt.files] == ["app.py"]
+    assert prompt.skipped == [(path, reason)]
+
+
+def test_files_merely_named_like_lockfiles_inside_a_path_are_still_shown() -> None:
+    text = "--- a/docs/yarn.lock.md\n+++ b/docs/yarn.lock.md\n@@ -0,0 +1 @@\n+notes\n"
+    assert [f.path for f in build_prompt(parse_patch(text)).files] == ["docs/yarn.lock.md"]
