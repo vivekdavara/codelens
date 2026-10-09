@@ -40,9 +40,31 @@ jobs:
         env:
           FILES: ${{ steps.codelens.outputs.files }}
           DIFF: ${{ steps.codelens.outputs.diff-file }}
+          FINDINGS: ${{ steps.codelens.outputs.findings }}
         run: |
           test "$FILES" = "8" || { echo "expected 8 files, got '$FILES'"; exit 1; }
           test "$DIFF" = "tests/fixtures/git_extended_headers.diff"
+          # No provider configured: the review step is skipped with a notice, not failed.
+          test "$FINDINGS" = "0" || { echo "expected a skipped review, got '$FINDINGS' findings"; exit 1; }
+
+  action-review:
+    # A full review through the action: the sample PR replayed from its hand-written recording, no key needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - id: codelens
+        uses: ./
+        with:
+          diff-file: tests/fixtures/sample_pr.diff
+          recordings: tests/fixtures/recordings
+      - name: Check outputs
+        env:
+          FINDINGS: ${{ steps.codelens.outputs.findings }}
+          REJECTED: ${{ steps.codelens.outputs.rejected }}
+        run: |
+          test "$FINDINGS" = "3" || { echo "expected 3 findings, got '$FINDINGS'"; exit 1; }
+          test "$REJECTED" = "1" || { echo "expected 1 rejected finding, got '$REJECTED'"; exit 1; }
 
   action-pr:
     # On pull requests, the action fetches the PR's own diff through the API.

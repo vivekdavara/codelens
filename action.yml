@@ -5,19 +5,36 @@ branding:
   icon: eye
   color: blue
 
-# Day 1: the action fetches the pull request's diff, parses it, and writes the reviewable lines to the job
-# summary. Review comments (day 2) and test generation (day 4) build on the same steps.
+# The action fetches the pull request's diff, summarises its reviewable lines, reviews it with the chosen
+# provider, writes the review to the job summary and, on a pull request, posts it as one review. Test
+# generation (day 4) builds on the same steps.
 #
 # Security: every ${{ }} value reaches the shell through env, never interpolated into a script, so a branch
-# name or input can't inject commands. Run this on `pull_request`, not `pull_request_target`.
+# name or input can't inject commands. Run this on `pull_request`, not `pull_request_target`: secrets are
+# then never exposed to code from forks, and on a fork's PR (no secrets) the review is skipped, not failed.
 
 inputs:
   github-token:
-    description: Token used to read the pull request diff (needs pull-requests read).
+    description: Token used to read the pull request diff and post the review (needs pull-requests write).
     default: ${{ github.token }}
   diff-file:
     description: Review this diff file instead of fetching the pull request's diff (for local runs and tests).
     default: ""
+  provider:
+    description: Model provider - recorded (replays saved answers from `recordings`), anthropic or openai.
+    default: recorded
+  api-key:
+    description: API key for a live provider; pass a secret. It reaches CodeLens through env only.
+    default: ""
+  model:
+    description: Model for a live provider (default - claude-opus-5-5 for anthropic, gpt-5 for openai).
+    default: ""
+  recordings:
+    description: Directory of recorded answers, for the recorded provider.
+    default: ""
+  post:
+    description: On a pull request, post the review ("true") or only write it to the job summary ("false").
+    default: "true"
   python-version:
     description: Python used to run CodeLens.
     default: "3.11"
@@ -29,6 +46,12 @@ outputs:
   files:
     description: Number of files in the diff.
     value: ${{ steps.summary.outputs.files }}
+  findings:
+    description: Number of findings in the review (0 when the review was skipped).
+    value: ${{ steps.review.outputs.findings }}
+  rejected:
+    description: Number of model findings dropped because they failed validation or anchoring.
+    value: ${{ steps.review.outputs.rejected }}
 
 runs:
   using: composite
@@ -78,3 +101,50 @@ runs:
         files=$(codelens diff --json "$DIFF_PATH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["files"]))')
         echo "files=$files" >> "$GITHUB_OUTPUT"
         codelens diff "$DIFF_PATH"
+
+    - name: Review
+      id: review
+      shell: bash
+      env:
+        DIFF_PATH: ${{ steps.diff.outputs.path }}
+        PROVIDER: ${{ inputs.provider }}
+        API_KEY: ${{ inputs.api-key }}
+        MODEL: ${{ inputs.model }}
+        RECORDINGS: ${{ inputs.recordings }}
+        POST: ${{ inputs.post }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        skip() {
+          echo "::notice::CodeLens review skipped: $1"
+          echo "findings=0" >> "$GITHUB_OUTPUT"
+          echo "rejected=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+        case "$PROVIDER" in
+          recorded)
+            [ -n "$RECORDINGS" ] || skip "no provider configured (set provider and api-key, or recordings)"
+            export CODELENS_RECORDINGS="$RECORDINGS" ;;
+          anthropic)
+            [ -n "$API_KEY" ] || skip "no api-key (secrets are not passed to pull requests from forks)"
+            export ANTHROPIC_API_KEY="$API_KEY" ;;
+          openai)
+            [ -n "$API_KEY" ] || skip "no api-key (secrets are not passed to pull requests from forks)"
+            export OPENAI_API_KEY="$API_KEY" ;;
+          *)
+            echo "::error::unknown provider '$PROVIDER' (use recorded, anthropic or openai)"
+            exit 1 ;;
+        esac
+        export CODELENS_PROVIDER="$PROVIDER"
+        if [ -n "$MODEL" ]; then export CODELENS_MODEL="$MODEL"; fi
+        args=(review "$DIFF_PATH" --json --summary-file "$GITHUB_STEP_SUMMARY")
+        if [ -n "$HEAD_SHA" ]; then args+=(--commit "$HEAD_SHA"); fi
+        if [ "$POST" = "true" ] && [ -n "$PR_NUMBER" ]; then args+=(--post --pr "$PR_NUMBER"); fi
+        codelens "${args[@]}" > "$RUNNER_TEMP/codelens-review.json"
+        python -c '
+        import json, sys
+        review = json.load(open(sys.argv[1]))
+        print("findings=%d" % len(review["findings"]))
+        print("rejected=%d" % len(review["rejections"]))
+        ' "$RUNNER_TEMP/codelens-review.json" >> "$GITHUB_OUTPUT"
