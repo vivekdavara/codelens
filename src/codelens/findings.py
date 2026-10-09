@@ -177,7 +177,8 @@ def _validate(index: int, item: Any) -> Finding | Rejection:
         severity, category = Severity(item["severity"]), Category(item["category"])
     except ValueError as exc:
         return invalid(str(exc))
-    title, body = item["title"].strip(), item["body"].strip()
+    # A title is one line (bold text and a table cell when posted); the body is Markdown and keeps its own.
+    title, body = " ".join(item["title"].split()), item["body"].strip()
     if not item["path"] or not title or not body:
         return invalid("path, title and body must not be empty")
     if len(title) > MAX_TITLE or len(body) > MAX_BODY:

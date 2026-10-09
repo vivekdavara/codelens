@@ -135,6 +135,12 @@ def test_titles_and_bodies_are_stripped() -> None:
     assert (finding.title, finding.body) == ("Title", "Body")
 
 
+def test_titles_are_kept_on_one_line_but_bodies_keep_their_markdown() -> None:
+    body = "First paragraph.\n\n```python\nx = 1\n```"
+    (finding,), _ = parse_findings(response(item(title="Refund\n  can go\tnegative", body=body)))
+    assert (finding.title, finding.body) == ("Refund can go negative", body)
+
+
 def finding(**overrides: Any) -> Finding:
     (f,), _ = parse_findings(response(item(**overrides)))
     return f
