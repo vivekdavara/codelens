@@ -164,3 +164,29 @@ def test_summary_with_details_writes_each_finding_out() -> None:
     assert lines[3:] == ["", "#### `svc/pay.py:6`", "", *comment_body(finding()).splitlines()]
     with_lead = summary_body(a_review(finding()), details="Findings:").splitlines()
     assert with_lead[3:6] == ["", "Findings:", ""]
+
+
+def test_summary_when_nothing_was_reviewed() -> None:
+    review = a_review(reviewed=[], model="", usage=Usage(), skipped=[("gone.txt", "deleted file")])
+    assert summary_body(review).splitlines() == [
+        "### CodeLens review",
+        "",
+        "Nothing to review: no file in this diff has added lines CodeLens can comment on.",
+        "",
+        "Not reviewed: `gone.txt` (deleted file).",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "hint"),
+    [(401, "missing or invalid"), (403, "pull-requests: write"), (404, "check the repository and PR number")],
+)
+def test_permission_errors_say_what_to_fix(fake_server: FakeServer, status: int, hint: str) -> None:
+    fake_server.reply(Reply(status, {"message": "Resource not accessible by integration"}))
+    with pytest.raises(GitHubError, match=hint):
+        post_review(a_review(finding()), "o/r", 3, TOKEN, api_url=fake_server.url)
+
+
+def test_an_unreachable_github_is_reported_as_such() -> None:
+    with pytest.raises(GitHubError, match="could not reach GitHub"):
+        post_review(a_review(finding()), "o/r", 3, TOKEN, api_url="http://127.0.0.1:9", timeout=2)

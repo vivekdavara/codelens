@@ -64,6 +64,11 @@ def comment_body(finding: Finding) -> str:
 
 
 _FALLBACK_LEAD = "GitHub did not accept these as line comments, so they are listed here:"
+_HINTS = {
+    401: "the token is missing or invalid",
+    403: "the token needs pull-requests: write (on a fork's PR the token is read-only)",
+    404: "check the repository and PR number, and that the token can see the repository",
+}
 
 
 def summary_body(review: Review, *, details: str | None = None) -> str:
@@ -76,12 +81,14 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     n = len(review.findings)
     files = len(review.reviewed)
     usage = review.usage
-    lines = [
-        "### CodeLens review",
-        "",
-        f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
-        f"({review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens).",
-    ]
+    if not review.reviewed:
+        headline = "Nothing to review: no file in this diff has added lines CodeLens can comment on."
+    else:
+        headline = (
+            f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
+            f"({review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens)."
+        )
+    lines = ["### CodeLens review", "", headline]
     if review.findings and details is None:
         lines += ["", "| Where | Severity | Finding |", "|---|---|---|"]
         lines += [
@@ -165,7 +172,10 @@ def post_review(
                 raise
             inline = False
             data = _post(url, review_payload(review, commit_id, inline=False), token, timeout)
+    except ProviderHTTPError as exc:
+        hint = f" ({_HINTS[exc.status]})" if exc.status in _HINTS else ""
+        raise GitHubError(f"GitHub did not accept the review: {exc}{hint}") from None
     except ProviderError as exc:
-        raise GitHubError(f"GitHub did not accept the review: {exc}") from None
+        raise GitHubError(f"could not reach GitHub: {exc}") from None
     review_id = data.get("id")
     return Posted(review_id if isinstance(review_id, int) else 0, str(data.get("html_url", "")), inline)

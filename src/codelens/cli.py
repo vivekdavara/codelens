@@ -172,12 +172,15 @@ def print_review(result: Review, out: TextIO) -> None:
             file=out,
         )
     n, files = len(result.findings), len(result.reviewed)
-    model = f"{result.provider}: {result.model}" if result.model else result.provider
-    print(
-        f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} ({model}, "
-        f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens)",
-        file=out,
-    )
+    if not result.reviewed:
+        print("nothing to review: no file in the diff has added lines (no model call made)", file=out)
+    else:
+        print(
+            f"{n} finding{'s' if n != 1 else ''} on {files} reviewed file{'s' if files != 1 else ''} "
+            f"({result.provider}: {result.model}, "
+            f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens)",
+            file=out,
+        )
     if result.rejections:
         counts = ", ".join(f"{kind} {count}" for kind, count in result.rejection_counts().items())
         print(f"dropped {len(result.rejections)}: {counts}", file=out)

@@ -282,3 +282,17 @@ def test_max_findings_caps_the_review(
     assert code == 0
     assert out.splitlines()[0].startswith("svc/pay.py:3  high")
     assert "over the cap: 1 lower-ranked findings left out" in out
+
+
+def test_a_diff_with_nothing_to_review_makes_no_call(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    deletion = tmp_path / "deletion.diff"
+    deletion.write_text("--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x = 1\n")
+    # No recordings directory exists: a provider call would fail, so success proves none was made.
+    code, out, _ = run(capsys, "review", str(deletion), "--recordings", str(tmp_path / "none"))
+    assert code == 0
+    assert out.splitlines() == [
+        "nothing to review: no file in the diff has added lines (no model call made)",
+        "not reviewed: gone.py (deleted file)",
+    ]
