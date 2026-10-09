@@ -306,7 +306,10 @@ gets one notification instead of one per finding, and a review with no findings 
 
 The action runs the review on `pull_request` (never `pull_request_target`, which runs fork code with write
 tokens and secrets) and posts by default (`post: "true"`; the job needs `pull-requests: write`). It always
-writes the review to the job summary. When there is nothing to review with, it skips the review with a
+writes the review to the job summary. It posts only a review of the PR's own diff (never of a `diff-file`,
+whose line numbers aren't the PR's), pinned to the event's head commit; after fetching the diff it checks the
+PR's head again, and if a newer push has landed it skips the review, because that push's own run reviews it
+and these line numbers would be pinned to the wrong commit. When there is nothing to review with, it skips the review with a
 notice instead of failing: a live provider without `api-key` (a fork's PR gets no secrets), or the recorded
 provider without `recordings`. Inputs reach the shell through env only.
 

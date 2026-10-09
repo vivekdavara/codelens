@@ -80,17 +80,30 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
+        from_pr=false
+        moved=false
         if [ -n "$DIFF_FILE" ]; then
           path="$DIFF_FILE"
         elif [ -n "$PR_NUMBER" ]; then
           path="$RUNNER_TEMP/codelens-pr-$PR_NUMBER.diff"
           gh api "repos/$REPO/pulls/$PR_NUMBER" -H "Accept: application/vnd.github.diff" > "$path"
+          from_pr=true
+          # That diff is of the PR's head when it was fetched. If the head is no longer this event's commit,
+          # a newer push happened and its own run reviews it; these line numbers must not be pinned to the
+          # old commit. Checked after the fetch, so an unchanged head means the diff is of this commit.
+          head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$head" != "$HEAD_SHA" ]; then moved=true; fi
         else
           echo "::error::CodeLens needs a pull_request event or the diff-file input"
           exit 1
         fi
-        echo "path=$path" >> "$GITHUB_OUTPUT"
+        {
+          echo "path=$path"
+          echo "from-pr=$from_pr"
+          echo "moved=$moved"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Parse and summarise
       id: summary
@@ -113,6 +126,8 @@ runs:
       shell: bash
       env:
         DIFF_PATH: ${{ steps.diff.outputs.path }}
+        FROM_PR: ${{ steps.diff.outputs.from-pr }}
+        MOVED: ${{ steps.diff.outputs.moved }}
         PROVIDER: ${{ inputs.provider }}
         API_KEY: ${{ inputs.api-key }}
         MODEL: ${{ inputs.model }}
@@ -130,7 +145,8 @@ runs:
           echo "rejected=0" >> "$GITHUB_OUTPUT"
           exit 0
         }
-        case "$PROVIDER" in
+        [ "$MOVED" != "true" ] || skip "the pull request moved on to a newer commit, which its own run reviews"
+        case "${PROVIDER:-recorded}" in
           recorded)
             [ -n "$RECORDINGS" ] || skip "no provider configured (set provider and api-key, or recordings)"
             export CODELENS_RECORDINGS="$RECORDINGS" ;;
@@ -144,12 +160,19 @@ runs:
             echo "::error::unknown provider '$PROVIDER' (use recorded, anthropic or openai)"
             exit 1 ;;
         esac
-        export CODELENS_PROVIDER="$PROVIDER"
+        export CODELENS_PROVIDER="${PROVIDER:-recorded}"
         if [ -n "$MODEL" ]; then export CODELENS_MODEL="$MODEL"; fi
-        args=(review "$DIFF_PATH" --json --summary-file "$GITHUB_STEP_SUMMARY"
-              --max-findings "$MAX_FINDINGS" --max-prompt-chars "$MAX_PROMPT_CHARS")
-        if [ -n "$HEAD_SHA" ]; then args+=(--commit "$HEAD_SHA"); fi
-        if [ "$POST" = "true" ] && [ -n "$PR_NUMBER" ]; then args+=(--post --pr "$PR_NUMBER"); fi
+        # An input set to an empty expression (an unset ${{ vars.X }}) arrives as "", not as its default.
+        args=(review "$DIFF_PATH" --json
+              --max-findings "${MAX_FINDINGS:-10}" --max-prompt-chars "${MAX_PROMPT_CHARS:-200000}")
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then args+=(--summary-file "$GITHUB_STEP_SUMMARY"); fi
+        # Post only a review of the PR's own diff: a diff-file's line numbers are not this PR's.
+        if [ "$FROM_PR" = "true" ]; then
+          args+=(--commit "$HEAD_SHA")
+          if [ "${POST:-true}" = "true" ]; then args+=(--post --pr "$PR_NUMBER"); fi
+        elif [ -n "$PR_NUMBER" ] && [ "${POST:-true}" = "true" ]; then
+          echo "::notice::CodeLens is not posting: the review is of diff-file, not of this pull request's diff"
+        fi
         codelens "${args[@]}" > "$RUNNER_TEMP/codelens-review.json"
         python -c '
         import json, sys
