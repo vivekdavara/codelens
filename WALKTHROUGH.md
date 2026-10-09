@@ -135,10 +135,11 @@ The review is posted once more with the findings written into its body.
 ## Large PRs and limits
 
 **What if the PR is huge?** The diff shown to the model is capped at 200,000 characters (roughly 50K tokens;
-`max-prompt-chars` changes it). Lock files and generated files (`package-lock.json`, `*.min.js`, protobuf
-output, snapshots) are skipped outright, since their diffs are often the largest and nobody reviews them.
-If the rest still doesn't fit, `prompts.budget_rank` gives the budget to code and config first, then tests,
-then docs; a file that doesn't fit is skipped whole, never cut mid-hunk, and reported. That ranking came
+`max-prompt-chars` changes it). If the diff doesn't fit, `prompts.budget_rank` gives the budget to code and
+config first, then tests, then docs, then lock and generated files (`package-lock.json`, `*.min.js`,
+protobuf output, snapshots), whose diffs are often the largest and rarely written by hand. They are ranked
+last, not skipped, because the PR author chooses file names: hand-written code in `x_pb2.py` must still be
+read when there is room. A file that doesn't fit is skipped whole, never cut mid-hunk, and reported. That ranking came
 from running CodeLens on its own day-2 diff (35 files): in plain diff order it cut 7 test files while the
 Markdown docs took about 40,000 characters; ranked, it cuts the 3 docs and 1 test file. Findings on files
 the model wasn't shown are rejected.

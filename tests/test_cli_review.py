@@ -315,11 +315,11 @@ def test_invalid_diffs_fail_both_commands(capsys: pytest.CaptureFixture[str], tm
 
 
 def test_prompt_reports_skipped_files_on_stderr(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
-    diff = tmp_path / "lock.diff"
-    diff.write_text("--- a/uv.lock\n+++ b/uv.lock\n@@ -0,0 +1 @@\n+x\n")
+    diff = tmp_path / "gone.diff"
+    diff.write_text("--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n")
     code, out, err = run(capsys, "prompt", str(diff))
     assert code == 0 and "(0 files shown)" in out
-    assert err == "skipped uv.lock: lock file\n"
+    assert err == "skipped gone.py: deleted file\n"
 
 
 def test_post_reports_findings_it_did_not_repeat(

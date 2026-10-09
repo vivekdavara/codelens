@@ -83,8 +83,10 @@ def render_file(file: FileDiff) -> str:
     return "\n".join(blocks).translate(_LINE_BREAKS)
 
 
-# Machine-written files: their diffs are often the largest in a PR and nobody reviews them line by line, so
-# showing them would spend the prompt budget that the code needs.
+# Usually machine-written: their diffs are often the largest in a PR and nobody reviews them line by line,
+# so they get the prompt budget last. They are not skipped outright, because the name is the PR author's to
+# choose: hand-written code in `x_pb2.py`, or a lock file pointing at a malicious package, still gets read
+# when there is room.
 LOCKFILES = frozenset(
     {
         "package-lock.json",
@@ -119,24 +121,23 @@ def _skip_reason(file: FileDiff) -> str | None:
         return "no added lines"
     if _unsafe(file.old_path) or _unsafe(file.new_path):
         return "control characters in the path"
-    name = file.path.rsplit("/", 1)[-1]
-    if name in LOCKFILES:
-        return "lock file"
-    if name.endswith(_GENERATED_SUFFIXES):
-        return "generated file"
     return None
 
 
-_DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+_DOC_SUFFIXES = (".md", ".markdown", ".rst", ".adoc")  # not .txt: requirements.txt, CMakeLists.txt
 _TEST_DIRS = frozenset({"test", "tests", "__tests__", "spec", "specs"})
 
 
 def budget_rank(file: FileDiff) -> int:
-    """Which files get the prompt budget first when it runs out: 0 code and config, 1 tests, 2 prose.
+    """Which files get the prompt budget first when it runs out: 0 code and config, 1 tests, 2 prose, 3 lock
+    and generated files.
 
-    A bug in code matters more than one in its tests, and either more than a slip in the docs.
+    A bug in code matters more than one in its tests, either more than a slip in the docs, and all of them
+    more than a diff nobody wrote by hand.
     """
     *dirs, name = file.path.split("/")
+    if name in LOCKFILES or name.endswith(_GENERATED_SUFFIXES):
+        return 3
     if name.lower().endswith(_DOC_SUFFIXES):
         return 2
     stem = name.rsplit(".", 1)[0]
@@ -152,11 +153,11 @@ def budget_rank(file: FileDiff) -> int:
 def build_prompt(patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS) -> ReviewPrompt:
     """Render the reviewable files into one prompt of at most ``max_chars`` characters of diff.
 
-    Files without added lines (deletions, pure renames, mode changes), binaries, lock files and generated
-    files are skipped: a comment needs a new-file line to sit on, and machine-written diffs aren't worth the
-    budget. When the rest doesn't fit, the budget goes to code first, then tests, then prose
-    (:func:`budget_rank`), in diff order within each; a file that doesn't fit is skipped whole, never cut
-    mid-hunk, and smaller files after it can still fit. The chosen files are shown in diff order.
+    Files without added lines (deletions, pure renames, mode changes) and binaries are skipped: a comment
+    needs a new-file line to sit on. When the rest doesn't fit, the budget goes to code first, then tests,
+    then prose, then lock and generated files (:func:`budget_rank`), in diff order within each; a file that
+    doesn't fit is skipped whole, never cut mid-hunk, and smaller files after it can still fit. The chosen
+    files are shown in diff order.
     """
     prompt = ReviewPrompt(Request(SYSTEM_PROMPT, "", FINDINGS_SCHEMA))
     skipped: list[tuple[int, str, str]] = []
