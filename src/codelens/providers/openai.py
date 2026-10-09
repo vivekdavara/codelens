@@ -88,7 +88,8 @@ def _dict(value: Any) -> dict[str, Any]:
 
 
 def _int(value: Any) -> int:
-    return value if type(value) is int else 0
+    """A token count from the response: a non-negative int, or 0 for anything else."""
+    return value if type(value) is int and value >= 0 else 0
 
 
 def parse_chat_completion(data: Any) -> Completion:

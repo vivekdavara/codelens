@@ -108,3 +108,9 @@ def test_rate_limits_are_retried_and_errors_never_contain_the_key(fake_server: F
 def test_a_key_is_required() -> None:
     with pytest.raises(ProviderError, match="OPENAI_API_KEY"):
         OpenAIProvider("")
+
+
+def test_nonsense_token_counts_count_as_zero() -> None:
+    data = chat()
+    data["usage"] = {"prompt_tokens": -1, "completion_tokens": 2.5}
+    assert parse_chat_completion(data).usage == Usage(0, 0)

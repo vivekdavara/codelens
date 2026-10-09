@@ -150,3 +150,8 @@ def test_configuration_errors() -> None:
         AnthropicProvider("")
     with pytest.raises(ProviderError, match="effort must be one of"):
         AnthropicProvider(KEY, effort="extreme")
+
+
+def test_nonsense_token_counts_count_as_zero() -> None:
+    usage = {"input_tokens": -5, "cache_read_input_tokens": "9", "output_tokens": True}
+    assert parse_message(message(usage=usage)).usage == Usage(0, 0)
