@@ -28,6 +28,8 @@ class Review:
     """Paths of the files the model was shown."""
     over_cap: int = 0
     """Valid findings dropped because the review already had ``max_findings``."""
+    repeated: int = 0
+    """Findings left out when posting because an earlier CodeLens review on the PR already posted them."""
     provider: str = ""
     model: str = ""
     usage: Usage = field(default_factory=Usage)

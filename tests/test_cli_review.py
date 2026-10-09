@@ -152,6 +152,7 @@ def test_post_sends_one_review(
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("GITHUB_API_URL", fake_server.url)
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    fake_server.reply(Reply(200, []), Reply(200, []))  # no earlier comments or reviews
     fake_server.reply(
         Reply(200, {"id": 81, "html_url": "https://github.com/o/r/pull/3#pullrequestreview-81"})
     )
@@ -169,8 +170,13 @@ def test_post_sends_one_review(
     code, _, err = run(capsys, *args)
     assert code == 0
     assert "posted review 81 with 1 findings as line comments" in err
-    (seen,) = fake_server.requests
+    seen = fake_server.requests[-1]
     assert seen.path == "/repos/o/r/pulls/3/reviews" and seen.body["commit_id"] == "c0"
+    # The same review again, after another push: the finding is already on the PR.
+    fake_server.reply(Reply(200, seen.body["comments"]), Reply(200, []))
+    code, _, err = run(capsys, *args)
+    assert code == 0 and "all 1 findings were already posted by an earlier review: nothing posted" in err
+    assert [r.method for r in fake_server.requests] == ["GET", "GET", "POST", "GET", "GET"]
 
 
 def test_post_with_no_findings_posts_nothing(

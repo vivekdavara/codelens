@@ -247,8 +247,16 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     except GitHubError as exc:
         print(f"codelens: {exc}", file=err)
         return 1
+    if posted.id is None:
+        print(
+            f"all {posted.repeated} findings were already posted by an earlier review: nothing posted",
+            file=err,
+        )
+        return 0
     where = "as line comments" if posted.inline else "in the review body (GitHub refused the line comments)"
-    print(f"posted review {posted.id} with {len(result.findings)} findings {where}: {posted.url}", file=err)
+    print(f"posted review {posted.id} with {posted.comments} findings {where}: {posted.url}", file=err)
+    if posted.repeated:
+        print(f"not repeated: {posted.repeated} findings an earlier review already posted", file=err)
     return 0
 
 

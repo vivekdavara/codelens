@@ -282,6 +282,16 @@ gets one notification instead of one per finding, and a review with no findings 
 - **422 fallback.** If GitHub refuses the line comments (typically "line must be part of the diff" because
   the PR moved on after the diff was fetched), the review is posted once more with each finding written out in
   the body instead.
+- **No repeats across pushes.** The action runs on every push to a PR, and each run would otherwise post the
+  same findings again. Every posted finding carries an invisible `<!-- codelens:<fingerprint> -->` marker,
+  where the fingerprint is a hash of the file path and the cited line's full text (kept findings carry the
+  line's full text, whatever part of it the model quoted). Before posting, CodeLens reads the PR's review
+  comments and review bodies (paginated GETs, up to 10 pages of 100 each, following `rel="next"` only on the
+  same API host, since the token goes with it) and leaves out findings whose fingerprint is already there;
+  the summary says how many. If nothing new is left, nothing is posted. Line numbers are left out of the
+  fingerprint because they move when lines are added above, and the title because a model rewords the same
+  issue from run to run; the cost is that CodeLens comments on a given line of code once per PR, even if a
+  later run finds a different problem there.
 - **Defanged output.** Model-written text can be steered by the diff, so `@mentions` outside code spans and
   fences get a word joiner after the `@` (GitHub then doesn't ping anyone); code is left alone so a pasted
   `@decorator` stays valid. The repository name is checked against `owner/name` before it becomes a URL path.
