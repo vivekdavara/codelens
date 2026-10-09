@@ -270,3 +270,24 @@ def test_reading_earlier_comments_can_fail_with_a_hint(fake_server: FakeServer) 
     fake_server.reply(Reply(404, {"message": "Not Found"}))
     with pytest.raises(GitHubError, match=r"could not read the PR's earlier comments.*check the repository"):
         post_review(a_review(finding()), "o/r", 3, TOKEN, api_url=fake_server.url)
+
+
+def test_reading_stops_after_max_pages(fake_server: FakeServer) -> None:
+    def page(n: int) -> Reply:
+        nxt = f"{fake_server.url}/repos/o/r/pulls/3/comments?per_page=100&page={n + 1}"
+        return Reply(200, [], {"Link": f'<{nxt}>; rel="next"'})
+
+    fake_server.reply(*(page(n) for n in range(1, 11)))  # ten pages, each pointing at another
+    fake_server.reply(Reply(200, []))  # the reviews listing
+    posted_fingerprints("o/r", 3, TOKEN, api_url=fake_server.url, timeout=5)
+    paths = [r.path for r in fake_server.requests]
+    assert sum("/comments" in p for p in paths) == 10 and paths[-1].endswith("/reviews?per_page=100")
+
+
+def test_a_post_that_times_out_is_not_retried(fake_server: FakeServer) -> None:
+    no_earlier_comments(fake_server)
+    fake_server.reply(Reply(200, {"id": 1}, delay=1.0), Reply(200, {"id": 2}))
+    with pytest.raises(GitHubError, match="could not reach GitHub"):
+        post_review(a_review(finding()), "o/r", 3, TOKEN, api_url=fake_server.url, timeout=0.3)
+    # GitHub may have created the review before the client gave up; a retry could post it twice.
+    assert [r.method for r in fake_server.requests] == ["GET", "GET", "POST"]
