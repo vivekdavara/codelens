@@ -43,3 +43,18 @@ def test_history_run_reports_each_commits_new_findings(tmp_path: Path) -> None:
     assert "commits with Python changes: 3" in lines
     assert "findings: 1" in lines and "hits on unchanged lines already there: 1" in lines
     assert lines[-1] == "findings by rule: F841 1"
+
+
+def test_a_history_without_python_changes(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=ENV, check=True)
+    commit(tmp_path, {"README.md": "x\n"}, "docs only")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "measure_static_history.py"), str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.splitlines() == [
+        f"repository: {tmp_path.name}, 1 non-merge commits, no Python checked",
+        "findings by rule: none",
+    ]

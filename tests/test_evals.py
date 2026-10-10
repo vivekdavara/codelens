@@ -37,6 +37,16 @@ def test_findings_match_labels_one_to_one() -> None:
     assert (found.precision, found.recall) == (0.5, 1.0)
 
 
+def test_matching_finds_as_many_bugs_as_it_can() -> None:
+    # Two labels share line 16. Greedy matching gave the first finding (line 16) the first label, and the
+    # second finding (line 15, which only the first label accepts) nothing: 1 of 2 found.
+    labels = [label(15, also=(16,)), label(16)]
+    found, correct = score([finding(16), finding(15)], labels)
+    assert correct == [True, True] and (found.correct, found.found) == (2, 2)
+    # With more fitting findings than labels, the earlier (higher-ranked) ones keep the match.
+    assert score([finding(16), finding(16), finding(15)], labels)[1] == [True, True, False]
+
+
 def test_the_category_must_match_unless_asked_not_to() -> None:
     labels = [label(3, Category.SECURITY)]
     assert score([finding(3)], labels)[1] == [False]

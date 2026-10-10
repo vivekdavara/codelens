@@ -117,3 +117,17 @@ def test_unreadable_cases_are_refused(tmp_path: Path) -> None:
     (case / "after" / "m.py").unlink()
     with pytest.raises(EvalError, match=re.escape("label path 'm.py'")):
         load_case(case)
+
+
+def test_build_evals_keeps_carriage_returns(tmp_path: Path) -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from build_evals import build
+
+    case = tmp_path / "crlf"
+    (case / "before").mkdir(parents=True)
+    (case / "after").mkdir()
+    (case / "before" / "m.py").write_bytes(b"x = 1\r\n")
+    (case / "after" / "m.py").write_bytes(b"x = 1\r\ny = 2\r\n")
+    assert b"+y = 2\r\n" in build(case)

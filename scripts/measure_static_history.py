@@ -41,6 +41,7 @@ def main() -> None:
     ruff = find_ruff()
     counts: Counter[str] = Counter()
     rules: Counter[str] = Counter()
+    tool = ""
     for sha, *parents in commits:
         base = parents[0] if parents else EMPTY_TREE
         patch = parse_patch(decode_diff(git(repo, "diff", *DIFF_FLAGS, base, sha)))
@@ -50,6 +51,7 @@ def main() -> None:
             with tarfile.open(fileobj=io.BytesIO(git(repo, "archive", "--format=tar", sha))) as tar:
                 tar.extractall(tmp, filter="data")
             result = analyse(patch, Path(tmp), ruff=ruff)
+        tool = result.tool or tool
         counts["commits with Python changes"] += 1
         counts["Python files checked"] += len(result.analysed)
         counts["Python files skipped"] += len(result.skipped)
@@ -63,7 +65,7 @@ def main() -> None:
         for f in result.findings:
             rules[f.rule] += 1
             print(f"{sha[:7]} {f.path}:{f.line} [{f.rule}] {f.title} | {f.quote.strip()[:80]}")
-    print(f"repository: {repo.name}, {len(commits)} non-merge commits, {result.tool if commits else ''}")
+    print(f"repository: {repo.name}, {len(commits)} non-merge commits, {tool or 'no Python checked'}")
     for name, value in counts.items():
         print(f"{name}: {value:,}")
     print("findings by rule: " + (", ".join(f"{r} {n}" for r, n in rules.most_common()) or "none"))

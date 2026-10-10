@@ -26,3 +26,33 @@ def test_the_recording_key_matches_the_cli_for_awkward_bytes(tmp_path: Path) -> 
     )
     expected = build_prompt(parse_patch(decode_diff(diff.read_bytes()))).request.key()
     assert [p.name for p in out.iterdir()] == [f"{expected}.json"]
+
+
+def test_by_default_it_keys_the_prompt_review_builds_in_the_same_directory(tmp_path: Path) -> None:
+    # Like `codelens review`, it runs the static pre-pass on the current directory unless told not to.
+    from codelens.static import analyse, find_ruff
+
+    case = ROOT / "evals" / "cases" / "discount-codes"
+    answer = tmp_path / "answer.json"
+    answer.write_text('{"findings": []}')
+    for flags, static in (([], True), (["--no-static"], False)):
+        out = tmp_path / f"recs-{static}"
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "hand_record.py"),
+                "../pr.diff",
+                str(answer),
+                "--out",
+                str(out),
+                *flags,
+            ],
+            cwd=case / "after",
+            check=True,
+            capture_output=True,
+        )
+        patch = parse_patch(decode_diff((case / "pr.diff").read_bytes()))
+        findings = analyse(patch, case / "after", ruff=find_ruff()).findings if static else []
+        assert findings or not static
+        expected = build_prompt(patch, static=findings).request.key()
+        assert [p.name for p in out.iterdir()] == [f"{expected}.json"]

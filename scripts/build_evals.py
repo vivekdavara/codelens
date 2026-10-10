@@ -33,7 +33,7 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.run([*GIT, *args], cwd=repo, env=env, check=True, capture_output=True, text=True).stdout
 
 
-def build(case: Path) -> str:
+def build(case: Path) -> bytes:
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
         git(repo, "init", "-q")
@@ -46,15 +46,19 @@ def build(case: Path) -> str:
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
         shutil.copytree(case / "after", repo, dirs_exist_ok=True)
         git(repo, "add", "-A")
-        return git(repo, "diff", "--cached", "-M", "--no-color", "--no-ext-diff")
+        # Bytes, not text: universal newlines would turn a "\r" in a case file into a line break.
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        diff = [*GIT, "diff", "--cached", "-M", "--no-color", "--no-ext-diff"]
+        return subprocess.run(diff, cwd=repo, env=env, check=True, capture_output=True).stdout
 
 
 def main() -> None:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else "evals/cases")
     for case in sorted(p for p in root.iterdir() if p.is_dir()):
         diff = build(case)
-        (case / "pr.diff").write_bytes(diff.encode("utf-8"))
-        print(f"{case.name}: {diff.count(chr(10))} diff lines")
+        (case / "pr.diff").write_bytes(diff)
+        lines = diff.count(b"\n")
+        print(f"{case.name}: {lines} diff lines")
 
 
 if __name__ == "__main__":

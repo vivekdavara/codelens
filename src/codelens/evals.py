@@ -163,26 +163,32 @@ def matches(finding: Finding, label: Label, *, categories: bool = True) -> bool:
 def score(
     findings: list[Finding], labels: list[Label], *, categories: bool = True
 ) -> tuple[Score, list[bool]]:
-    """Match ``findings`` to ``labels`` one to one, in the findings' order: each finding takes the first label
-    it fits that no earlier finding took. A second finding on a bug already found counts against precision.
+    """Match ``findings`` to ``labels`` one to one so that as many bugs as possible count as found.
 
-    Returns the score and, for each finding, whether it matched.
+    A maximum matching (augmenting paths): a greedy pass can give a finding the one label another
+    finding needed, when two labels share a line. Findings earlier in the list (the ranking's order) keep
+    their match when there are more fitting findings than labels. A finding left without a label, such as
+    a second finding on a found bug, counts against precision. Returns the score and, for each finding,
+    whether it matched.
     """
-    taken = [False] * len(labels)
-    correct: list[bool] = []
-    for finding in findings:
-        i = next(
-            (
-                i
-                for i, label in enumerate(labels)
-                if not taken[i] and matches(finding, label, categories=categories)
-            ),
-            None,
-        )
-        if i is not None:
-            taken[i] = True
-        correct.append(i is not None)
-    return Score(len(findings), sum(correct), len(labels), sum(taken)), correct
+    fits = [[matches(f, label, categories=categories) for label in labels] for f in findings]
+    owner: list[int | None] = [None] * len(labels)  # label -> the finding that found it
+
+    def claim(i: int, seen: set[int]) -> bool:
+        for j, fit in enumerate(fits[i]):
+            if fit and j not in seen:
+                seen.add(j)
+                holder = owner[j]
+                if holder is None or claim(holder, seen):
+                    owner[j] = i
+                    return True
+        return False
+
+    for i in range(len(findings)):
+        claim(i, set())
+    matched = {i for i in owner if i is not None}
+    correct = [i in matched for i in range(len(findings))]
+    return Score(len(findings), len(matched), len(labels), len(matched)), correct
 
 
 def posted(findings: list[Finding], cap: int = MAX_FINDINGS) -> list[Finding]:
