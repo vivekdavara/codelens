@@ -21,9 +21,25 @@ from pathlib import Path
 from typing import Any
 
 from codelens.diff import PatchSet, Side, decode_diff, parse_patch
-from codelens.findings import Category
+from codelens.findings import Category, Finding, check_response
+from codelens.prompts import MAX_FINDINGS, build_prompt
+from codelens.providers import Completion, Provider, RecordingMissing, Request
+from codelens.review import dedupe, rank, review
+from codelens.static import analyse
 
-__all__ = ["Case", "EvalError", "Label", "load_case", "load_cases"]
+__all__ = [
+    "Case",
+    "CaseResult",
+    "EvalError",
+    "Label",
+    "Report",
+    "Score",
+    "load_case",
+    "load_cases",
+    "run",
+    "run_case",
+    "score",
+]
 
 
 class EvalError(ValueError):
@@ -106,3 +122,215 @@ def load_cases(root: Path) -> list[Case]:
     if not root.is_dir():
         raise EvalError(f"no eval cases at {root}")
     return [load_case(d) for d in sorted(root.iterdir()) if d.is_dir() and not d.name.startswith(".")]
+
+
+@dataclass
+class Score:
+    findings: int = 0
+    correct: int = 0
+    """Findings that matched a label."""
+    labels: int = 0
+    found: int = 0
+    """Labels that some finding matched."""
+
+    def __add__(self, other: Score) -> Score:
+        return Score(
+            self.findings + other.findings,
+            self.correct + other.correct,
+            self.labels + other.labels,
+            self.found + other.found,
+        )
+
+    @property
+    def precision(self) -> float | None:
+        return self.correct / self.findings if self.findings else None
+
+    @property
+    def recall(self) -> float | None:
+        return self.found / self.labels if self.labels else None
+
+
+def matches(finding: Finding, label: Label, *, categories: bool = True) -> bool:
+    return (
+        finding.path == label.path
+        and finding.line in label.lines
+        and (not categories or finding.category is label.category)
+    )
+
+
+def score(
+    findings: list[Finding], labels: list[Label], *, categories: bool = True
+) -> tuple[Score, list[bool]]:
+    """Match ``findings`` to ``labels`` one to one, in the findings' order: each finding takes the first label
+    it fits that no earlier finding took. A second finding on a bug already found counts against precision.
+
+    Returns the score and, for each finding, whether it matched.
+    """
+    taken = [False] * len(labels)
+    correct: list[bool] = []
+    for finding in findings:
+        i = next(
+            (
+                i
+                for i, label in enumerate(labels)
+                if not taken[i] and matches(finding, label, categories=categories)
+            ),
+            None,
+        )
+        if i is not None:
+            taken[i] = True
+        correct.append(i is not None)
+    return Score(len(findings), sum(correct), len(labels), sum(taken)), correct
+
+
+def posted(findings: list[Finding], cap: int = MAX_FINDINGS) -> list[Finding]:
+    """What a review with only these findings would post: deduped, ranked, capped."""
+    return rank(dedupe(findings)[0])[:cap]
+
+
+class _Once:
+    """Asks the wrapped provider once per request, so scoring the model alone and the merged review costs
+    one call per case, even with a live provider."""
+
+    def __init__(self, inner: Provider) -> None:
+        self.inner = inner
+        self.name = inner.name
+        self.answers: dict[str, Completion] = {}
+
+    def complete(self, request: Request) -> Completion:
+        key = request.key()
+        if key not in self.answers:
+            self.answers[key] = self.inner.complete(request)
+        return self.answers[key]
+
+
+@dataclass
+class CaseResult:
+    case: Case
+    static: list[Finding]
+    """What the static pre-pass alone would post."""
+    model: list[Finding] | None = None
+    """What the model alone would post, or ``None`` when the case has no recording."""
+    combined: list[Finding] | None = None
+    """What the review posts: static and model findings merged, ranked and capped."""
+    model_name: str = ""
+
+    def findings(self, source: str) -> list[Finding] | None:
+        return {"static": self.static, "model": self.model, "combined": self.combined}[source]
+
+
+def run_case(case: Case, provider: Provider | None, *, ruff: list[str] | None) -> CaseResult:
+    """Review one case the way ``codelens review`` would, and keep each source's findings apart.
+
+    A case without a recording (``RecordingMissing``) is scored on the static pre-pass only; any other
+    provider error is raised, since a broken provider would make every number wrong.
+    """
+    pre = analyse(case.patch, case.root, ruff=ruff)
+    result = CaseResult(case, posted(pre.findings))
+    if provider is None:
+        return result
+    once = _Once(provider)
+    try:
+        merged = review(case.patch, once, static=pre)
+    except RecordingMissing:
+        return result
+    prompt = build_prompt(case.patch, static=pre.findings)
+    completion = once.complete(prompt.request)  # the review's own answer, from the cache
+    found, _ = check_response(completion.text, PatchSet(prompt.files))
+    result.model, result.combined, result.model_name = posted(found), merged.findings, completion.model
+    return result
+
+
+SOURCES = ("static", "model", "combined")
+_ROW_NAMES = {"static": "static pre-pass", "model": "model alone", "combined": "static + model (posted)"}
+
+
+@dataclass
+class Report:
+    results: list[CaseResult]
+
+    def scored(self, source: str) -> list[CaseResult]:
+        return [r for r in self.results if r.findings(source) is not None]
+
+    def total(self, source: str, *, categories: bool = True) -> Score:
+        total = Score()
+        for result in self.scored(source):
+            findings = result.findings(source)
+            assert findings is not None
+            total += score(findings, result.case.labels, categories=categories)[0]
+        return total
+
+    def models(self) -> list[str]:
+        return sorted({r.model_name for r in self.results if r.model_name})
+
+    def markdown(self) -> str:
+        def pct(value: float | None) -> str:
+            return "—" if value is None else f"{value:.1%}"
+
+        n = len(self.results)
+        lines = [
+            "| Source | Cases scored | Findings | Correct | Precision | Bugs found | Recall "
+            "| Recall, any category |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for source in SOURCES:
+            strict, loose = self.total(source), self.total(source, categories=False)
+            lines.append(
+                f"| {_ROW_NAMES[source]} | {len(self.scored(source))} of {n} | {strict.findings} | "
+                f"{strict.correct} | {pct(strict.precision)} | {strict.found} of {strict.labels} | "
+                f"{pct(strict.recall)} | {pct(loose.recall)} |"
+            )
+        lines += ["", "| Case | Bugs | Static: found / false positives | Model: found / false positives |"]
+        lines.append("|---|---|---|---|")
+        for result in self.results:
+            cells = []
+            for source in ("static", "model"):
+                findings = result.findings(source)
+                if findings is None:
+                    cells.append("not recorded")
+                    continue
+                case_score, _ = score(findings, result.case.labels)
+                cells.append(f"{case_score.found} / {case_score.findings - case_score.correct}")
+            lines.append(f"| `{result.case.name}` | {len(result.case.labels)} | {cells[0]} | {cells[1]} |")
+        return "\n".join(lines) + "\n"
+
+    def to_dict(self) -> dict[str, Any]:
+        def entry(result: CaseResult, source: str) -> list[dict[str, Any]] | None:
+            findings = result.findings(source)
+            if findings is None:
+                return None
+            _, correct = score(findings, result.case.labels)
+            return [{**f.to_dict(), "correct": ok} for f, ok in zip(findings, correct, strict=True)]
+
+        totals = {}
+        for source in SOURCES:
+            strict, loose = self.total(source), self.total(source, categories=False)
+            totals[source] = {
+                "cases": len(self.scored(source)),
+                "findings": strict.findings,
+                "correct": strict.correct,
+                "labels": strict.labels,
+                "found": strict.found,
+                "precision": strict.precision,
+                "recall": strict.recall,
+                "recall_any_category": loose.recall,
+            }
+        return {
+            "models": self.models(),
+            "totals": totals,
+            "cases": [
+                {
+                    "name": r.case.name,
+                    "labels": [
+                        {"path": lb.path, "line": lb.line, "category": lb.category.value}
+                        for lb in r.case.labels
+                    ],
+                    **{source: entry(r, source) for source in SOURCES},
+                }
+                for r in self.results
+            ],
+        }
+
+
+def run(cases: list[Case], provider: Provider | None, *, ruff: list[str] | None) -> Report:
+    return Report([run_case(case, provider, ruff=ruff) for case in cases])

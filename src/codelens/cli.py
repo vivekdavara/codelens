@@ -3,7 +3,8 @@
 ``codelens diff`` parses a unified diff and shows what CodeLens would review. ``codelens review`` reviews it
 with a model provider (recorded by default) and prints the review, or posts it with ``--post``.
 ``codelens prompt`` prints exactly what the model would be sent. ``codelens static`` runs only the static
-pre-pass (ruff and CodeLens's rules on the Python lines the diff adds).
+pre-pass (ruff and CodeLens's rules on the Python lines the diff adds). ``codelens eval`` scores all of it
+on the eval set of pull requests with seeded bugs.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from typing import Any, TextIO
 
 from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, decode_diff, parse_patch
+from codelens.evals import EvalError, load_cases
+from codelens.evals import run as run_evals
 from codelens.findings import FindingsFormatError
 from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
@@ -81,6 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
     rev.add_argument("--pr", type=positive_int, help="pull request number to post to")
     rev.add_argument("--commit", help="head commit SHA the review is for")
     add_static_arguments(rev)
+
+    ev = sub.add_parser("eval", help="score CodeLens on the eval set: precision and recall per source")
+    ev.add_argument(
+        "--cases", type=Path, default=Path("evals/cases"), help="eval cases (default: evals/cases)"
+    )
+    ev.add_argument(
+        "--recordings", type=Path, default=Path("evals/recordings"), help="default: evals/recordings"
+    )
+    ev.add_argument("--provider", choices=PROVIDERS, help="model provider (default: recorded)")
+    ev.add_argument("--model", help="model name for a live provider")
+    ev.add_argument("--record", action="store_true", help="save the live provider's answers to --recordings")
+    ev.add_argument("--static-only", action="store_true", help="score only the static pre-pass")
+    ev.add_argument("--json", action="store_true", help="print every finding and score as JSON")
     return parser
 
 
@@ -370,6 +386,41 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     return 0
 
 
+def run_eval(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    try:
+        cases = load_cases(args.cases)
+        provider: Provider | None = None
+        if not args.static_only:
+            # The eval's own recordings, whatever CODELENS_PROVIDER says: --provider picks a live one.
+            provider = make_provider(
+                args.provider or "recorded", model=args.model, recordings=args.recordings
+            )
+            if args.record:
+                if provider.name == "recorded":
+                    print("codelens: --record needs a live provider (--provider anthropic|openai)", file=err)
+                    return 2
+                provider = Recorder(provider, args.recordings)
+        report = run_evals(cases, provider, ruff=find_ruff())
+    except (EvalError, ProviderError, FindingsFormatError) as exc:
+        print(f"codelens: eval failed: {exc}", file=err)
+        return 1
+    if args.json:
+        json.dump(report.to_dict(), out, indent=2)
+        out.write("\n")
+    else:
+        out.write(report.markdown())
+    missing = len(cases) - len(report.scored("model"))
+    if provider is not None and missing:
+        print(
+            f"{plural(missing, 'case')} without a recorded answer: scored on the static pre-pass only "
+            "(record them with --provider anthropic --record)",
+            file=err,
+        )
+    if report.models():
+        print(f"model answers from: {', '.join(report.models())}", file=err)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "version":
@@ -381,6 +432,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_prompt(args, sys.stdout, sys.stderr)
     if args.command == "static":
         return run_static(args, sys.stdout, sys.stderr)
+    if args.command == "eval":
+        return run_eval(args, sys.stdout, sys.stderr)
     if args.command == "review":
         return run_review(args, sys.stdout, sys.stderr)
     return 2  # pragma: no cover - argparse rejects unknown commands first
