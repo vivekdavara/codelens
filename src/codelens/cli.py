@@ -110,6 +110,7 @@ def static_json(result: StaticResult | None) -> dict[str, Any] | None:
         "skipped": [{"path": p, "reason": r} for p, r in result.skipped],
         "notes": result.notes,
         "outside": result.outside,
+        "existing": result.existing,
         "findings": [f.to_dict() for f in result.findings],
     }
 

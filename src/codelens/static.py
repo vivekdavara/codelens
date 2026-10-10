@@ -1,8 +1,9 @@
 """The static pre-pass: ruff and CodeLens's own rules on the Python lines a pull request adds.
 
 Static findings are posted like the model's (``source: "static"``) and listed in the prompt, so the model
-starts from verified facts instead of rediscovering them. Only hits on added lines count: a PR is not the
-place to report what was already there.
+starts from verified facts instead of rediscovering them. Only problems the PR introduces count: hits on
+added lines, and hits on unchanged lines that the old version of the file didn't have. A PR is not the place
+to report what was already there, but a change can make an unchanged line wrong.
 
 Files are read from a checkout of the PR's head (``root``) and used only if every line the diff shows is the
 same on disk. A checkout of another commit (``actions/checkout`` defaults to the PR's merge commit, which
@@ -18,17 +19,19 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from codelens import rules
-from codelens.diff import FileDiff, FileStatus, PatchSet
+from codelens.diff import FileDiff, FileStatus, LineKind, PatchSet, Side
 from codelens.findings import Category, Finding, Severity, anchored
 from codelens.prompts import unsafe_path
 
-__all__ = ["RULES", "Rule", "StaticResult", "analyse", "find_ruff", "ruff_codes"]
+__all__ = ["RULES", "Rule", "StaticResult", "analyse", "find_ruff", "old_version", "ruff_codes"]
 
 MAX_FILE_BYTES = 2_000_000
 RUFF_TIMEOUT = 120.0
@@ -333,7 +336,9 @@ class StaticResult:
     notes: list[str] = field(default_factory=list)
     """Problems with the pre-pass itself, such as ruff missing or failing; the review goes on without it."""
     outside: int = 0
-    """Hits on lines the PR didn't add, which are not reported."""
+    """Hits on lines the diff doesn't show, which no comment can be attached to."""
+    existing: int = 0
+    """Hits on unchanged lines that the old version had too: not this PR's doing, so not reported."""
 
 
 def find_ruff() -> list[str] | None:
@@ -478,9 +483,62 @@ def _finding(file: FileDiff, lines: list[str], hit: rules.Hit, patch: PatchSet) 
     return placed if isinstance(placed, Finding) else None
 
 
+def old_version(file: FileDiff, new: list[str]) -> list[str]:
+    """The file before the change, rebuilt from its new version and the diff: each hunk's new side (context
+    and added lines) is swapped for its old side (context and removed lines). Exact when ``new`` matches
+    the diff, which :func:`analyse` checks first."""
+    old: list[str] = []
+    i = 0  # index into new
+    for hunk in file.hunks:
+        start = hunk.new_start - 1 if hunk.new_count else hunk.new_start
+        old += new[i:start]
+        i = start
+        for line in hunk.lines:
+            if line.kind is not LineKind.ADDED:
+                old.append(line.content)
+            if line.kind is not LineKind.REMOVED:
+                i += 1
+    return old + new[i:]
+
+
+def _hits(
+    root: Path, items: list[tuple[str, list[str]]], ruff: Sequence[str] | None, result: StaticResult
+) -> list[list[rules.Hit]]:
+    """Every rule's hits on each ``(path, lines)`` of ``items``; ruff reads the files from ``root``."""
+    hits = [rules.check("\n".join(lines)) for _, lines in items]
+    if ruff is not None:
+        for i, ruff_hits in _run_ruff(ruff, root, [path for path, _ in items], result).items():
+            hits[i].extend(ruff_hits)
+    return hits
+
+
+def _old_hits(
+    files: list[tuple[FileDiff, list[str]]], ruff: Sequence[str] | None
+) -> tuple[list[list[rules.Hit]], list[list[str]]] | None:
+    """The same checks on every file's old version (empty for added files), or ``None`` if they failed."""
+    olds = [old_version(f, lines) if f.status is not FileStatus.ADDED else [] for f, lines in files]
+    scratch = StaticResult()
+    with tempfile.TemporaryDirectory(prefix="codelens-old-") as tmp:
+        root = Path(tmp)
+        for (file, _), old in zip(files, olds, strict=True):
+            (root / file.path).parent.mkdir(parents=True, exist_ok=True)
+            (root / file.path).write_text("\n".join(old), encoding="utf-8")
+        hits = _hits(root, [(f.path, old) for (f, _), old in zip(files, olds, strict=True)], ruff, scratch)
+    return None if scratch.notes else (hits, olds)
+
+
+def _signature(code: str, lines: list[str], line: int) -> tuple[str, str]:
+    return code, " ".join(lines[line - 1].split()) if 0 < line <= len(lines) else ""
+
+
 def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> StaticResult:
     """Check the Python files ``patch`` adds lines to, as they are in ``root``, with ruff and CodeLens's
-    rules.
+    rules, and keep the problems the change introduces.
+
+    That is every hit on an added line, and every hit on an unchanged line shown in the diff that the old
+    version didn't have: making a function ``async`` makes its unchanged ``time.sleep`` block the event loop.
+    The old version is rebuilt from the new one and the diff (:func:`old_version`) and checked the same way.
+    Hits on lines the diff doesn't show can't be commented on and are only counted.
 
     ``ruff`` is the command to run (see :func:`find_ruff`); with ``None`` only CodeLens's own rules run and a
     note says so. Never raises for a problem with a file or with ruff: those become skips and notes.
@@ -501,20 +559,27 @@ def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> Stati
             result.analysed.append(file.path)
     if not files:
         return result
-    hits: list[list[rules.Hit]] = [rules.check("\n".join(lines)) for _, lines in files]
     if ruff is None:
         result.notes.append(
-            "ruff is not installed, so only CodeLens's own rules ran (pip install codelens[static])"
+            "ruff is not installed, so only CodeLens's own rules ran (pip install 'codelens[static]')"
         )
-    else:
-        for i, ruff_hits in _run_ruff(ruff, root, [file.path for file, _ in files], result).items():
-            hits[i].extend(ruff_hits)
-    for (file, lines), file_hits in zip(files, hits, strict=True):
-        added = set(file.added_lines())
-        for hit in sorted(file_hits, key=lambda h: (h.line, h.code)):
-            if hit.line not in added or hit.line > len(lines):
+    hits = _hits(root, [(f.path, lines) for f, lines in files], ruff, result)
+    # Without a clean check of the old versions there is no telling new from old on unchanged lines, so
+    # only added lines count then.
+    old = _old_hits(files, ruff) if not result.notes or ruff is None else None
+    for i, (file, lines) in enumerate(files):
+        added, shown = set(file.added_lines()), file.commentable_lines(Side.RIGHT)
+        before = Counter(_signature(h.code, old[1][i], h.line) for h in old[0][i]) if old else Counter()
+        for hit in sorted(hits[i], key=lambda h: (h.line, h.code)):
+            if hit.line not in shown or hit.line > len(lines):
                 result.outside += 1
                 continue
+            if hit.line not in added:
+                signature = _signature(hit.code, lines, hit.line)
+                if old is None or before[signature] > 0:
+                    before[signature] -= 1
+                    result.existing += 1
+                    continue
             finding = _finding(file, lines, hit, patch)
             if finding is not None:
                 result.findings.append(finding)

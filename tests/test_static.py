@@ -55,7 +55,7 @@ def test_only_lines_the_pr_adds_are_reported(tmp_path: Path) -> None:
     after = before + "\n\ndef new(y):\n    also_unused = 2\n    return y\n"
     result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
     assert [(f.line, f.rule) for f in result.findings] == [(7, "F841")]
-    assert result.outside == 1  # the old unused variable is not this PR's doing
+    assert result.existing == 1  # the old unused variable, shown as context, is not this PR's doing
     assert result.analysed == ["m.py"] and result.tool.startswith("ruff ")
 
 
@@ -302,3 +302,59 @@ def test_a_hit_that_does_not_anchor_is_dropped(tmp_path: Path) -> None:
     (tmp_path / "m.py").write_text("x = 1\ndef f():\n")
     result = run(parse_patch(diff), tmp_path)
     assert result.findings == [] and result.analysed == ["m.py"]
+
+
+def test_a_change_that_makes_an_unchanged_line_wrong_is_reported(tmp_path: Path) -> None:
+    before = "import time\n\n\ndef run(job):\n    time.sleep(1)\n    job.done()\n"
+    after = "import time\n\n\nasync def run(job):\n    time.sleep(1)\n    job.done()\n"
+    result = run(make_pr(tmp_path, {"w.py": before}, {"w.py": after}), tmp_path)
+    # Line 5 is unchanged context, but only the new version is a coroutine that blocks the event loop.
+    assert [(f.line, f.rule) for f in result.findings] == [(5, "ASYNC251")]
+    assert result.existing == 0
+
+
+def test_a_problem_on_an_unchanged_line_that_was_already_there_is_not(tmp_path: Path) -> None:
+    before = "import time\n\n\nasync def run(job):\n    time.sleep(1)\n    job.done()\n"
+    after = before.replace("job.done()", "job.finish()")
+    result = run(make_pr(tmp_path, {"w.py": before}, {"w.py": after}), tmp_path)
+    assert result.findings == [] and result.existing == 1
+
+
+def test_the_same_problem_twice_counts_each_occurrence(tmp_path: Path) -> None:
+    # Both sleeps are unchanged lines; the old version had one ASYNC251, the new one has two.
+    before = "import time\n\n\nasync def a():\n    time.sleep(1)\n\n\ndef b():\n    time.sleep(1)\n"
+    after = before.replace("def b", "async def b")
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert [(f.line, f.rule) for f in result.findings] == [(9, "ASYNC251")] and result.existing == 1
+
+
+def test_hits_on_lines_the_diff_does_not_show_are_only_counted(tmp_path: Path) -> None:
+    before = "def f():\n    x = 1\n" + "\n" * 10 + "y = 1\n"
+    after = before.replace("y = 1", "y = 2")
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert result.findings == [] and result.outside == 1 and result.existing == 0
+
+
+def test_when_the_old_version_cannot_be_checked_only_added_lines_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = "import time\n\n\ndef run(job):\n    time.sleep(1)\n    unused = 1\n"
+    after = before.replace("def run", "async def run").replace("unused = 1", "unused = 2")
+    patch = make_pr(tmp_path, {"w.py": before}, {"w.py": after})
+    monkeypatch.setattr(static, "_old_hits", lambda files, ruff: None)
+    result = run(patch, tmp_path)
+    assert [(f.line, f.rule) for f in result.findings] == [(6, "F841")] and result.existing == 1
+
+
+def test_old_version_rebuilds_the_file_before_the_change(tmp_path: Path) -> None:
+    before = "".join(f"line {n}\n" for n in range(1, 30))
+    after = (
+        before.replace("line 3\n", "")
+        .replace("line 15\n", "line 15\nnew a\nnew b\n")
+        .replace("line 28\n", "changed 28\n")
+    )
+    patch = make_pr(tmp_path, {"t.py": before}, {"t.py": after})
+    assert static.old_version(patch.files[0], after.split("\n")) == before.split("\n")
+    (tmp_path / "added").mkdir()
+    added = make_pr(tmp_path / "added", {}, {"t.py": after})
+    assert static.old_version(added.files[0], after.split("\n")) == [""]
