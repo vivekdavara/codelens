@@ -166,6 +166,9 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
         notes.append(f"Dropped {dropped} that failed validation or anchoring ({counts}).")
     if review.duplicates:
         notes.append(f"Merged {plural(review.duplicates, 'duplicate finding')} (same line and category).")
+    if review.below:
+        below = plural(review.below, "finding")
+        notes.append(f"Left out {below} less severe than {review.min_severity.value}.")
     if review.over_cap:
         notes.append(f"Left out {plural(review.over_cap, 'lower-ranked finding')} over the cap.")
     if review.repeated:

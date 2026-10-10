@@ -61,7 +61,9 @@ codelens eval                         # score it on the eval set (precision and 
 
 `review` and `prompt` run the static pre-pass on `--source-root` (default `.`), which must be a checkout of
 the diff's new version: a file whose lines don't match the diff is skipped and named in the output.
-`--no-static` turns the pre-pass off. Without the `static` extra (`pip install 'codelens[static]'`, which
+`--no-static` turns the pre-pass off, and `--min-severity medium` (or `high`, `critical`) leaves out the
+less severe findings after the merge; the model isn't told the threshold, so one recording serves every
+setting. Without the `static` extra (`pip install 'codelens[static]'`, which
 pins ruff 0.16.10) only CodeLens's own rules run, and the output says so.
 
 Output on the sample PR in this repo, replayed from its recording
@@ -140,7 +142,8 @@ jobs:
 ```
 
 Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `post` (default `"true"`),
-`max-findings` (default 10), `max-prompt-chars` (default 200000), `static` (default `"true"`),
+`max-findings` (default 10), `max-prompt-chars` (default 200000), `min-severity` (default `low`, keep
+everything; `medium` leaves out the minor ones), `static` (default `"true"`),
 `source-root` (default the workspace), `diff-file`, `github-token`, `python-version`. Outputs: `files`,
 `findings`, `rejected`, `static` (how many of the findings came from the pre-pass), `diff-file`. On
 `pull_request`, `actions/checkout` checks out the merge commit by default; files the base branch also

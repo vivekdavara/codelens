@@ -171,3 +171,24 @@ def test_review_json_without_the_pre_pass(capsys: pytest.CaptureFixture[str], ch
     ]
     code, out, _ = run(capsys, *args)
     assert code == 0 and json.loads(out)["static"] is None
+
+
+def test_min_severity_on_the_command_line(capsys: pytest.CaptureFixture[str], checkout: Path) -> None:
+    patch = parse_patch(DIFF)
+    pre = analyse(patch, checkout, ruff=find_ruff())
+    request = build_prompt(patch, static=pre.findings).request
+    recordings = checkout.parent / "rec"
+    write_recording(recordings, request, Completion(json.dumps({"findings": []}), HAND_WRITTEN), "recorded")
+    args = ["review", str(checkout.parent / "pr.diff"), "--recordings", str(recordings), "--source-root"]
+    code, out, _ = run(capsys, *args, str(checkout), "--min-severity", "high")
+    assert code == 0 and "below high severity: 1 finding left out" in out.splitlines()
+    code, out, _ = run(capsys, *args, str(checkout), "--min-severity", "high", "--json")
+    data = json.loads(out)
+    assert data["findings"] == [] and data["below_min_severity"] == 1
+    with pytest.raises(SystemExit):
+        main([*args, str(checkout), "--min-severity", "nit"])
+
+
+def test_the_summary_names_the_threshold() -> None:
+    review = Review([], reviewed=["svc/pay.py"], min_severity=Severity.HIGH, below=2)
+    assert "Left out 2 findings less severe than high." in summary_body(review)

@@ -21,7 +21,7 @@ from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, decode_diff, parse_patch
 from codelens.evals import EvalError, load_cases
 from codelens.evals import run as run_evals
-from codelens.findings import FindingsFormatError
+from codelens.findings import FindingsFormatError, Severity
 from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rev.add_argument("--pr", type=positive_int, help="pull request number to post to")
     rev.add_argument("--commit", help="head commit SHA the review is for")
+    rev.add_argument(
+        "--min-severity",
+        choices=[s.value for s in Severity],
+        default=Severity.LOW.value,
+        help="leave out findings less severe than this (default: low, keep all)",
+    )
     add_static_arguments(rev)
 
     ev = sub.add_parser("eval", help="score CodeLens on the eval set: precision and recall per source")
@@ -255,6 +261,7 @@ def review_json(result: Review, payload: dict[str, Any]) -> dict[str, Any]:
         "rejections": [{"index": r.index, "kind": r.kind, "detail": r.detail} for r in result.rejections],
         "over_cap": result.over_cap,
         "duplicates": result.duplicates,
+        "below_min_severity": result.below,
         "static": static_json(result.static),
         "payload": payload,
     }
@@ -287,6 +294,11 @@ def print_review(result: Review, out: TextIO) -> None:
             print(f"  [{r.index}] {r.kind}: {r.detail}", file=out)
     if result.duplicates:
         print(f"merged {plural(result.duplicates, 'duplicate')} (same line and category)", file=out)
+    if result.below:
+        print(
+            f"below {result.min_severity.value} severity: {plural(result.below, 'finding')} left out",
+            file=out,
+        )
     if result.over_cap:
         print(f"over the cap: {plural(result.over_cap, 'lower-ranked finding')} left out", file=out)
     for path, reason in result.skipped:
@@ -328,6 +340,7 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
             static=run_static_pass(args, patch),
             max_findings=args.max_findings,
             max_prompt_chars=args.max_prompt_chars,
+            min_severity=Severity(args.min_severity),
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: review failed: {exc}", file=err)

@@ -224,3 +224,24 @@ def test_static_findings_count_against_the_cap() -> None:
     pre = StaticResult(findings=[static_finding(line, "critical") for line in (2, 3, 4)])
     result = review(PATCH, Scripted(answer(item(12, "low"))), static=pre, max_findings=2)
     assert [f.line for f in result.findings] == [2, 3] and [f.line for f in result.held] == [4, 12]
+
+
+def test_min_severity_leaves_out_less_severe_findings_without_changing_the_prompt() -> None:
+    pre = StaticResult(findings=[static_finding(10, "low")])
+    items = answer(item(4, "high", 0.9), item(5, "medium", 0.9), item(6, "low", 0.9))
+    everything, high_only = Scripted(items), Scripted(items)
+    full = review(PATCH, everything, static=pre)
+    kept = review(PATCH, high_only, static=pre, min_severity=Severity.HIGH)
+    assert [f.line for f in full.findings] == [4, 5, 6, 10] and full.below == 0
+    assert [f.line for f in kept.findings] == [4] and kept.below == 3
+    assert kept.min_severity is Severity.HIGH and kept.held == [] and kept.over_cap == 0
+    # The model is never told the threshold: one recording serves every setting.
+    assert everything.requests[0].key() == high_only.requests[0].key()
+
+
+def test_min_severity_applies_after_the_merge() -> None:
+    # The model's low and ruff's high are one problem on line 10: the high one survives a medium threshold.
+    pre = StaticResult(findings=[static_finding(10, "high")])
+    result = review(PATCH, Scripted(answer(item(10, "low", 0.9))), static=pre, min_severity=Severity.MEDIUM)
+    assert [(f.line, f.source) for f in result.findings] == [(10, "static")]
+    assert result.duplicates == 1 and result.below == 0

@@ -41,6 +41,9 @@ inputs:
   max-prompt-chars:
     description: Characters of diff shown to the model; code gets them first, then tests, then docs.
     default: "200000"
+  min-severity:
+    description: Leave out findings less severe than this - low (keep all), medium, high or critical.
+    default: "low"
   static:
     description: Run the static pre-pass (ruff and CodeLens's rules) on the Python lines the PR adds ("true" or "false").
     default: "true"
@@ -148,6 +151,7 @@ runs:
         MAX_FINDINGS: ${{ inputs.max-findings }}
         MAX_PROMPT_CHARS: ${{ inputs.max-prompt-chars }}
         STATIC: ${{ inputs.static }}
+        MIN_SEVERITY: ${{ inputs.min-severity }}
         SOURCE_ROOT: ${{ inputs.source-root }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -180,7 +184,8 @@ runs:
         # An input set to an expression that is empty (say, an unset repository variable) arrives as "",
         # not as the input's default.
         args=(review "$DIFF_PATH" --json
-              --max-findings "${MAX_FINDINGS:-10}" --max-prompt-chars "${MAX_PROMPT_CHARS:-200000}")
+              --max-findings "${MAX_FINDINGS:-10}" --max-prompt-chars "${MAX_PROMPT_CHARS:-200000}"
+              --min-severity "${MIN_SEVERITY:-low}")
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then args+=(--summary-file "$GITHUB_STEP_SUMMARY"); fi
         if [ "${STATIC:-true}" = "true" ]; then
           args+=(--source-root "${SOURCE_ROOT:-$GITHUB_WORKSPACE}")

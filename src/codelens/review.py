@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from codelens.diff import PatchSet
-from codelens.findings import Finding, Rejection, check_response
+from codelens.findings import Finding, Rejection, Severity, check_response
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import Provider, Usage
 from codelens.static import StaticResult
@@ -43,6 +43,9 @@ class Review:
     """What the static pre-pass checked and found, or ``None`` when it didn't run."""
     duplicates: int = 0
     """Findings merged into another one on the same line with the same category (see :func:`dedupe`)."""
+    min_severity: Severity = Severity.LOW
+    below: int = 0
+    """Findings left out because they are less severe than ``min_severity``."""
 
     def rejection_counts(self) -> dict[str, int]:
         return dict(sorted(Counter(r.kind for r in self.rejections).items()))
@@ -82,12 +85,16 @@ def review(
     static: StaticResult | None = None,
     max_findings: int = MAX_FINDINGS,
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
+    min_severity: Severity = Severity.LOW,
 ) -> Review:
     """Review ``patch`` with one provider call, adding the static pre-pass's findings if it ran.
 
     Static findings are listed in the prompt and merged with the model's (:func:`dedupe`) before ranking
-    and the cap. No call is made when no file is reviewable (only deletions, renames or binaries): such PRs
-    cost nothing, and static findings, which don't depend on the prompt, are still returned.
+    and the cap. Findings less severe than ``min_severity`` are left out after the merge; the model is not
+    told about the threshold, so changing it doesn't change the prompt (or any recording key).
+
+    No call is made when no file is reviewable (only deletions, renames or binaries): such PRs cost nothing,
+    and static findings, which don't depend on the prompt, are still returned.
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
@@ -110,7 +117,9 @@ def review(
         found, result.rejections = check_response(completion.text, PatchSet(prompt.files))
         result.model, result.usage = completion.model, completion.usage
     merged, result.duplicates = dedupe([*pre, *found])
-    ranked = rank(merged)
+    kept = [f for f in merged if f.severity.rank <= min_severity.rank]
+    result.min_severity, result.below = min_severity, len(merged) - len(kept)
+    ranked = rank(kept)
     result.findings, result.held = ranked[:max_findings], ranked[max_findings:]
     result.max_findings = max_findings
     result.over_cap = len(result.held)
