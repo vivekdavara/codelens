@@ -146,7 +146,7 @@ def static_lines(result: StaticResult | None) -> list[str]:
         tool = f"{result.tool} + CodeLens rules" if result.tool else "CodeLens rules"
         lines.append(
             f"static analysis: {tool} on {plural(len(result.analysed), 'Python file')}, "
-            f"{plural(len(result.findings), 'finding')} on added lines"
+            f"{plural(len(result.findings), 'finding')} the diff introduces"
         )
     lines += [f"not checked by static analysis: {path} ({reason})" for path, reason in result.skipped]
     return lines
@@ -281,19 +281,23 @@ def print_review(result: Review, out: TextIO) -> None:
             "nothing reviewed: no file in the diff could be shown to the model (no model call made)", file=out
         )
     else:
-        print(
-            f"{plural(n, 'finding')} on {plural(files, 'reviewed file')} "
-            f"({result.provider}: {result.model}, "
-            f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens)",
-            file=out,
+        tokens = (
+            f"{result.provider}: {result.model}, "
+            f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens"
         )
+        unseen = sum(1 for f in result.findings if f.path not in result.reviewed)
+        where = f"on {plural(files, 'reviewed file')}"
+        if unseen:  # static findings on files over the prompt budget
+            reviewed = plural(files, "file")
+            where = f"({unseen} from static analysis on files the model wasn't shown); {reviewed} reviewed"
+        print(f"{plural(n, 'finding')} {where} ({tokens})", file=out)
     if result.rejections:
         counts = ", ".join(f"{kind} {count}" for kind, count in result.rejection_counts().items())
         print(f"dropped {len(result.rejections)}: {counts}", file=out)
         for r in result.rejections:
             print(f"  [{r.index}] {r.kind}: {r.detail}", file=out)
     if result.duplicates:
-        print(f"merged {plural(result.duplicates, 'duplicate')} (same line and category)", file=out)
+        print(f"merged {plural(result.duplicates, 'finding')} into another on the same line", file=out)
     if result.below:
         print(
             f"below {result.min_severity.value} severity: {plural(result.below, 'finding')} left out",

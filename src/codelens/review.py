@@ -42,7 +42,7 @@ class Review:
     static: StaticResult | None = None
     """What the static pre-pass checked and found, or ``None`` when it didn't run."""
     duplicates: int = 0
-    """Findings merged into another one on the same line with the same category (see :func:`dedupe`)."""
+    """Findings merged into a more severe (or more confident) one on the same line (see :func:`dedupe`)."""
     min_severity: Severity = Severity.LOW
     below: int = 0
     """Findings left out because they are less severe than ``min_severity``."""
@@ -61,18 +61,20 @@ def _order(finding: Finding) -> tuple[int, float]:
 
 
 def dedupe(findings: Iterable[Finding]) -> tuple[list[Finding], int]:
-    """One finding per (path, line, side, category): the one :func:`rank` puts first, and on a tie the first.
+    """One finding per (path, line, side): the one :func:`rank` puts first, and on a tie the first.
 
-    Keeping simply the most confident one would let a confident ``low`` replace a less confident
-    ``critical`` on the same line. Callers put static findings first, so a full tie goes to the
-    reproducible one. Two findings of different categories on one line are different problems and both
-    stay. Returns the kept findings in first-seen order and how many were merged away.
+    One per line, whatever the categories, because posting identifies a finding by its line (the
+    fingerprint: path, line text, occurrence), so two findings on one line would share a marker and the
+    one not posted would count as posted on the next push. Keeping simply the most confident one would
+    let a confident ``low`` replace a less confident ``critical``. Callers put static findings first, so a
+    full tie goes to the reproducible one. Returns the kept findings in first-seen order and how many were
+    merged away.
     """
-    best: dict[tuple[str, int, str, str], Finding] = {}
+    best: dict[tuple[str, int, str], Finding] = {}
     total = 0
     for finding in findings:
         total += 1
-        key = (finding.path, finding.line, finding.side.value, finding.category.value)
+        key = (finding.path, finding.line, finding.side.value)
         if key not in best or _order(finding) < _order(best[key]):
             best[key] = finding
     return list(best.values()), total - len(best)

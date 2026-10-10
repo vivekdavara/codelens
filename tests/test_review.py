@@ -116,11 +116,10 @@ def test_findings_on_files_the_model_was_not_shown_are_rejected() -> None:
 
 
 def test_the_cap_keeps_the_worst_findings() -> None:
-    # Line 12's critical is a different category from its low, so the two are different problems.
-    critical = item(12, "critical", 0.4, category="security")
+    critical = item(10, "critical", 0.4)
     items = [item(line, "low", 0.5) for line in (1, 3, 4, 5, 6, 11, 12, 13)] + [critical]
     result = review(PATCH, Scripted(answer(*items)), max_findings=3)
-    assert [(f.line, f.severity.value) for f in result.findings] == [(12, "critical"), (1, "low"), (3, "low")]
+    assert [(f.line, f.severity.value) for f in result.findings] == [(10, "critical"), (1, "low"), (3, "low")]
     assert result.over_cap == 6
     # The rest are held, in rank order, for posting to reach into when some of the top three were posted.
     assert [f.line for f in result.held] == [4, 5, 6, 11, 12, 13] and result.max_findings == 3
@@ -181,10 +180,11 @@ def test_dedupe_keeps_what_the_ranking_puts_first() -> None:
     assert dedupe([first, second]) == ([first], 1)  # a full tie goes to the first: static, by convention
 
 
-def test_dedupe_keeps_different_problems_on_one_line() -> None:
-    bug, security = static_finding(4), static_finding(4, category=Category.SECURITY)
+def test_dedupe_keeps_one_finding_per_line_whatever_the_category() -> None:
+    # Posting identifies a finding by its line; two on one line would share a fingerprint.
+    bug, security = static_finding(4), static_finding(4, "high", category=Category.SECURITY)
     other_line, other_file = static_finding(5), static_finding(4, path="svc/other.py")
-    assert dedupe([bug, security, other_line, other_file]) == ([bug, security, other_line, other_file], 0)
+    assert dedupe([bug, security, other_line, other_file]) == ([security, other_line, other_file], 1)
 
 
 def test_static_findings_are_listed_in_the_prompt_and_merged_with_the_models() -> None:

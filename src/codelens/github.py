@@ -148,10 +148,14 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     elif not review.reviewed:
         headline = "Nothing reviewed: no file in this diff could be shown to the model."
     else:
-        headline = (
-            f"{plural(n, 'finding')} on {plural(files, 'reviewed file')} "
-            f"({review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens)."
-        )
+        tokens = f"{review.model}, {usage.input_tokens:,} input / {usage.output_tokens:,} output tokens"
+        unseen = sum(1 for f in review.findings if f.path not in review.reviewed)
+        headline = f"{plural(n, 'finding')} on {plural(files, 'reviewed file')} ({tokens})."
+        if unseen:  # static findings on files over the prompt budget: not "on reviewed files"
+            headline = (
+                f"{plural(n, 'finding')}, {unseen} of them from static analysis on files the model wasn't "
+                f"shown; the model reviewed {plural(files, 'file')} ({tokens})."
+            )
     lines = ["### CodeLens review", "", headline]
     if review.findings and details is None:
         lines += ["", "| Where | Severity | Finding |", "|---|---|---|"]
@@ -169,7 +173,7 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
         dropped = plural(len(review.rejections), "finding")
         notes.append(f"Dropped {dropped} that failed validation or anchoring ({counts}).")
     if review.duplicates:
-        notes.append(f"Merged {plural(review.duplicates, 'duplicate finding')} (same line and category).")
+        notes.append(f"Merged {plural(review.duplicates, 'finding')} into another on the same line.")
     if review.below:
         below = plural(review.below, "finding")
         notes.append(f"Left out {below} less severe than {review.min_severity.value}.")
@@ -202,7 +206,7 @@ def static_notes(review: Review) -> list[str]:
         tool = f"{static.tool} and CodeLens rules" if static.tool else "CodeLens rules"
         notes.append(
             f"Static analysis ({tool}) checked {plural(len(static.analysed), 'Python file')} and found "
-            f"{plural(len(static.findings), 'problem')} on added lines."
+            f"{plural(len(static.findings), 'problem')} this pull request introduces."
         )
     if static.skipped:
         listed = ", ".join(f"{_path(path)} ({reason})" for path, reason in static.skipped[:MAX_LISTED])
