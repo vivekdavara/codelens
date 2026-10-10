@@ -1,7 +1,8 @@
 # CodeLens walkthrough
 
 Questions an interviewer is likely to ask about CodeLens, with short answers grounded in the code. Covers days
-1 and 2 (the diff parser and the review engine); later days add their own sections.
+1 to 3 (the diff parser, the review engine, the static pre-pass and the eval set); later days add their own
+sections.
 
 ## The one-minute version
 
@@ -13,14 +14,17 @@ hostile diff must not be able to steer the bot. Most of the code is about those 
 **Walk me through one review.** `codelens review pr.diff` (`cli.py`, `run_review`):
 
 1. `diff.parse_patch` turns the diff into files, hunks and lines, each with old and new line numbers.
-2. `prompts.build_prompt` renders the reviewable files with new-file numbers in the margin, under a fixed
-   system prompt, within a 200,000-character budget.
-3. `provider.complete(request)` makes one call (recorded by default; Anthropic or OpenAI when opted in) and
+2. `static.analyse` runs ruff and CodeLens's rules on the changed Python files, read from the checkout, and
+   keeps what the PR introduced.
+3. `prompts.build_prompt` renders the reviewable files with new-file numbers in the margin, under a fixed
+   system prompt, within a 200,000-character budget, then lists the static findings.
+4. `provider.complete(request)` makes one call (recorded by default; Anthropic or OpenAI when opted in) and
    asks for structured JSON matching `findings.FINDINGS_SCHEMA`.
-4. `findings.check_response` validates each finding and anchors it: the line must be in the diff and must say
+5. `findings.check_response` validates each finding and anchors it: the line must be in the diff and must say
    what the finding's `quote` says. Failures are dropped with a reason, never moved.
-5. `review.review` ranks what's left worst first and caps it at 10; `github.review_payload` builds one
-   `COMMENT` review; `github.post_review` posts it (or the CLI prints it, the default).
+6. `review.review` merges them with the static findings (`dedupe`), ranks worst first and caps at 10;
+   `github.review_payload` builds one `COMMENT` review; `github.post_review` posts it (or the CLI prints it,
+   the default).
 
 ## The diff parser (day 1)
 
@@ -132,6 +136,93 @@ could silence CodeLens on every line they chose. Now only markers in comments by
 **And if GitHub rejects the line comments?** A 422 usually means the PR moved on after the diff was fetched.
 The review is posted once more with the findings written into its body.
 
+## The static pre-pass (day 3)
+
+**Why run static analysis if you have an LLM?** Because some bugs are facts, not opinions: an undefined
+name, an `except A or B`, a coroutine called without `await`. A rule finds those every time for free, and a
+model finds them sometimes. The pre-pass posts them as they are and lists them in the prompt
+(`prompts.render_static`), so the model starts from checked facts and spends its attention on what rules
+can't see.
+
+**Which rules, and why not all of ruff?** 56 ruff rules picked one by one for bugs (`static.RULES`), each
+with a severity, a category, a confidence prior and a sentence on the consequence, which becomes the comment
+body. Whole families would be noise: B008 flags every FastAPI `Depends()`, S101 every `assert` in tests. A
+test asks ruff for its own rule list and fails if a selected code is missing or preview-only.
+
+**Why `--isolated`?** The PR's `pyproject.toml` is written by the PR's author. Without `--isolated`, a PR could
+add `ignore = ["S608"]` next to its SQL injection. A test commits exactly that kind of config and checks the
+finding still appears.
+
+**Why your own rules?** For bugs ruff 0.16 doesn't report, or reports only in preview (whose behaviour can
+change between releases): CL001 a coroutine called without `await`, CL002 code after `return`/`raise`/
+`break`/`continue`, CL003 changing the collection a loop iterates, CL004 a missing `f` prefix. Each is a
+small AST pass in `rules.py`, and each is narrow on purpose: CL003 stays quiet on a loop over a copy or a
+change followed by `break`; CL004 only fires when every placeholder names a local, and skips `.format`
+receivers, loguru-style keyword templates and search tokens.
+
+**How does it read the code, and what if the checkout is wrong?** From a checkout of the PR's new version
+(`--source-root`, the workspace in the action). A file is used only if every line the diff shows matches the
+file on disk (`static._matches`); otherwise it is skipped with a reason. That matters because
+`actions/checkout` checks out the PR's merge commit by default, where a file the base branch also changed has
+different line numbers. Symlinks and paths that escape the root are skipped too, since the PR controls them.
+
+**Why not just report hits on added lines?** That was the first version, and the eval's `async-jobs` case
+broke it: the PR changes `def run` to `async def run`, which makes its unchanged `time.sleep()` block the
+event loop and its unchanged `self.flush()` a coroutine that never runs. Both bugs are on context lines. Now
+the pre-pass also reports a hit on a shown unchanged line if the old version of the file didn't have it.
+
+**Where does the old version come from?** It's rebuilt from the new file and the diff (`static.old_version`):
+for each hunk, swap its new side (context and added lines) for its old side (context and removed lines). The
+new file was already verified against the diff, so this is exact, and no git history or base checkout is
+needed. The old version goes through the same checks in a temporary directory, and a hit counts as old when
+the old version has the same rule on a line with the same text, counted per occurrence.
+
+**How are static and model findings merged?** `review.dedupe`: one finding per (path, line, side,
+category), keeping the one the ranking puts first (severity, then confidence). The plan said "keep the more
+confident one", and the existing cap test caught why that's wrong: a confident `low` would replace a less
+confident `critical` on the same line. Different categories on one line are different problems and both
+stay.
+
+**Why is ruff pinned?** The static block is part of the prompt, and recordings are keyed by a hash of the
+prompt. A different ruff could word a message differently and orphan every recording. CI's `action-static`
+job replays, on a Linux runner, a recording made on a Mac, which only works if the pinned ruff says exactly
+the same thing on both.
+
+## Evals (day 3)
+
+**What's in the eval set?** 14 small PRs in `evals/cases/` (12 with 23 seeded bugs, 2 clean), each a
+`before/` and `after/` tree, the real `git diff -M` of the two, and `labels.json`. A label names its bug's line
+by quoting it (`evals._resolve`), so labels can't drift when a case is edited, and `also` lists other lines
+a reviewer could fairly cite. A test checks that every committed diff still turns `before/` into `after/`.
+
+**How is a finding matched to a bug?** Same path, a line among the label's lines, and the same category;
+one to one, so a second comment on a found bug counts as a false positive (`evals.score`). Each source is
+scored on what it would post: deduped, ranked and capped (`evals.posted`).
+
+**What are the numbers, and are they honest?** The static pre-pass posts 14 findings on the 14 cases, all
+correct, and finds 14 of the 23 bugs (`codelens eval`). The precision on this set is real, but the recall is
+an upper bound: I wrote the rules and the cases on the same day, and about half the bugs are of a kind a
+rule targets. The 9 misses are the semantic ones, such as off-by-one pagination, path traversal and a timing-unsafe
+token compare: exactly the model's job.
+
+**Why are there no model numbers?** They need real model answers, and there was no API key where this was
+built. Hand-written answers would only measure my own guesses about a model, so the model rows say "not
+recorded", and the harness never scores a missing recording as zero. One command records the 14 answers
+(`codelens eval --provider anthropic --record`), and after that CI replays them.
+
+**How do you know the rules aren't noisy on real code?** `scripts/measure_static_noise.py` reviews 296
+files of the Python 3.11.12 standard library as if a PR had added each one whole: 3.14 hits per 1,000 lines
+outside tests, 14.69 in tests, and most of those are deliberate (the standard library calls `eval` on
+purpose). It also found two real bugs in the standard library: two error messages in
+`test/support/__init__.py` missing their `f` prefix.
+
+**Did the measurements find bugs in your own code?** Yes, three. The eval found the added-lines-only gap
+(above). The stdlib run found two false-positive classes: CL003 fired on CookieJar's
+`for cookie in self: self.clear(domain, path, name)`, which is CookieJar's own `clear` over a snapshot, so
+CL003 now checks the call's arity against the built-in methods (`list.clear` takes no arguments); and CL004
+fired on CodeLens's own `prompts.py`, on the `"{max_findings}"` token passed to `.replace`, so search tokens
+are skipped. A test now requires 0 hits on CodeLens's own sources.
+
 ## Large PRs and limits
 
 **What if the PR is huge?** The diff shown to the model is capped at 200,000 characters (roughly 50K tokens;
@@ -146,13 +237,14 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 323 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 492 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
 negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
-repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); and a CI
-job that runs a full review through `action.yml` on the sample PR.
+repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); two CI
+jobs that run full reviews through `action.yml` (the sample PR, and an eval case with the static pre-pass);
+and the eval set, whose static numbers are pinned by a test.
 
 **Did anything find bugs you had missed?** A review of the whole day-2 diff by nine independent agents (line
 by line, removed behaviour, call sites, Python pitfalls, wrappers, reuse, simplification, efficiency,
@@ -164,9 +256,11 @@ recording (after the paid model call).
 
 ## What's not done yet
 
-- **Review quality is unmeasured.** Precision and recall need real model answers on PRs with seeded bugs
-  (day 3); the hand-written recording proves the pipeline, not the model.
-- Static pre-pass and dedupe within a review (day 3), test generation (day 4).
+- **The model's review quality is unmeasured.** The eval set and harness exist; the 14 real answers need an
+  API key (`codelens eval --provider anthropic --record`). The hand-written recordings prove the pipeline,
+  not the model.
+- Test generation (day 4).
+- The static pre-pass is Python only, and its eval recall is an upper bound (same author as the rules).
 - Comments on removed lines (LEFT side): the prompt numbers only new-file lines, so a removal is flagged on
   the nearest line still in the file.
 - Reviewing only what changed since the last review; today every run reviews the whole PR diff and relies on
