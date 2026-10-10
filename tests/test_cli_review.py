@@ -84,6 +84,8 @@ def test_review_from_recordings_is_a_dry_run(
         "1 finding on 1 reviewed file (recorded: hand-written, 0 input / 0 output tokens)",
         "dropped 1: misquoted 1",
         "  [1] misquoted: svc/pay.py:4 is 'net = 0', not 'if net < 0:'",
+        # The static pre-pass reads the diff's new version from --source-root (default: .).
+        "not checked by static analysis: svc/pay.py (not found in .)",
     ]
     assert "dry run: nothing posted" in err
 
@@ -441,6 +443,7 @@ def test_files_skipped_for_the_budget_are_not_called_files_without_added_lines(
     assert out.splitlines() == [
         "nothing reviewed: no file in the diff could be shown to the model (no model call made)",
         "not reviewed: svc/pay.py (over the 10-character prompt budget)",
+        "not checked by static analysis: svc/pay.py (not found in .)",
     ]
 
 

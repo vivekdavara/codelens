@@ -32,6 +32,7 @@ __all__ = [
     "post_review",
     "posted_fingerprints",
     "review_payload",
+    "static_notes",
     "summary_body",
 ]
 
@@ -136,7 +137,11 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     n = len(review.findings)
     files = len(review.reviewed)
     usage = review.usage
-    if not review.reviewed:
+    if not review.reviewed and review.findings:
+        headline = (
+            f"{plural(n, 'finding')} from static analysis; no file in this diff could be shown to the model."
+        )
+    elif not review.reviewed:
         headline = "Nothing reviewed: no file in this diff could be shown to the model."
     else:
         headline = (
@@ -159,6 +164,8 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
         counts = ", ".join(f"{kind} {count}" for kind, count in review.rejection_counts().items())
         dropped = plural(len(review.rejections), "finding")
         notes.append(f"Dropped {dropped} that failed validation or anchoring ({counts}).")
+    if review.duplicates:
+        notes.append(f"Merged {plural(review.duplicates, 'duplicate finding')} (same line and category).")
     if review.over_cap:
         notes.append(f"Left out {plural(review.over_cap, 'lower-ranked finding')} over the cap.")
     if review.repeated:
@@ -169,12 +176,34 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
         skipped = ", ".join(f"{_path(path)} ({reason})" for path, reason in review.skipped[:MAX_LISTED])
         rest = len(review.skipped) - MAX_LISTED
         notes.append(f"Not reviewed: {skipped}" + (f", and {rest:,} more." if rest > 0 else "."))
+    notes += static_notes(review)
     if notes:
         lines += ["", *notes]
     body = "\n".join(lines)
     if len(body) > MAX_BODY_CHARS:  # e.g. a high max-findings, written out in full: avoid GitHub's 422
         body = body[:MAX_BODY_CHARS] + "\n\n(truncated)"
     return body
+
+
+def static_notes(review: Review) -> list[str]:
+    """What the static pre-pass checked, skipped and ran into, as sentences for the summary."""
+    static = review.static
+    if static is None:
+        return []
+    notes = [f"Static analysis: {note}." for note in static.notes]
+    if static.analysed:
+        tool = f"{static.tool} and CodeLens rules" if static.tool else "CodeLens rules"
+        notes.append(
+            f"Static analysis ({tool}) checked {plural(len(static.analysed), 'Python file')} and found "
+            f"{plural(len(static.findings), 'problem')} on added lines."
+        )
+    if static.skipped:
+        listed = ", ".join(f"{_path(path)} ({reason})" for path, reason in static.skipped[:MAX_LISTED])
+        rest = len(static.skipped) - MAX_LISTED
+        notes.append(
+            f"Not checked by static analysis: {listed}" + (f", and {rest:,} more." if rest > 0 else ".")
+        )
+    return notes
 
 
 def review_payload(review: Review, commit_id: str | None = None, *, inline: bool = True) -> dict[str, Any]:

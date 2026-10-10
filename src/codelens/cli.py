@@ -2,7 +2,8 @@
 
 ``codelens diff`` parses a unified diff and shows what CodeLens would review. ``codelens review`` reviews it
 with a model provider (recorded by default) and prints the review, or posts it with ``--post``.
-``codelens prompt`` prints exactly what the model would be sent.
+``codelens prompt`` prints exactly what the model would be sent. ``codelens static`` runs only the static
+pre-pass (ruff and CodeLens's rules on the Python lines the diff adds).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, re
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
+from codelens.static import StaticResult, analyse, find_ruff
 
 _STATUS_LETTER = {"added": "A", "deleted": "D", "modified": "M", "renamed": "R", "copied": "C"}
 
@@ -49,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     prompt.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
     prompt.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
     prompt.add_argument("--max-findings", type=positive_int, default=MAX_FINDINGS)
+    add_static_arguments(prompt)
+
+    static = sub.add_parser("static", help="run only the static pre-pass on the Python lines a diff adds")
+    static.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
+    static.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    add_static_arguments(static, switch=False)
 
     rev = sub.add_parser("review", help="review a diff and print the review (or post it with --post)")
     rev.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
@@ -72,7 +80,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rev.add_argument("--pr", type=positive_int, help="pull request number to post to")
     rev.add_argument("--commit", help="head commit SHA the review is for")
+    add_static_arguments(rev)
     return parser
+
+
+def add_static_arguments(parser: argparse.ArgumentParser, *, switch: bool = True) -> None:
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=Path("."),
+        help="checkout of the diff's new version, read by the static pre-pass (default: .)",
+    )
+    if switch:
+        parser.add_argument("--no-static", action="store_true", help="skip the static pre-pass")
+
+
+def run_static_pass(args: argparse.Namespace, patch: PatchSet) -> StaticResult | None:
+    if getattr(args, "no_static", False):
+        return None
+    return analyse(patch, args.source_root, ruff=find_ruff())
+
+
+def static_json(result: StaticResult | None) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    return {
+        "tool": result.tool,
+        "analysed": result.analysed,
+        "skipped": [{"path": p, "reason": r} for p, r in result.skipped],
+        "notes": result.notes,
+        "outside": result.outside,
+        "findings": [f.to_dict() for f in result.findings],
+    }
+
+
+def static_lines(result: StaticResult | None) -> list[str]:
+    """What the static pre-pass did, for the terminal: nothing when it didn't run or had nothing to check."""
+    if result is None:
+        return []
+    lines = [f"static analysis: {note}" for note in result.notes]
+    if result.analysed:
+        tool = f"{result.tool} + CodeLens rules" if result.tool else "CodeLens rules"
+        lines.append(
+            f"static analysis: {tool} on {plural(len(result.analysed), 'Python file')}, "
+            f"{plural(len(result.findings), 'finding')} on added lines"
+        )
+    lines += [f"not checked by static analysis: {path} ({reason})" for path, reason in result.skipped]
+    return lines
 
 
 def _ranges_text(ranges: list[tuple[int, int]]) -> str:
@@ -143,11 +197,33 @@ def run_prompt(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     patch = read_patch(args.file, err)
     if patch is None:
         return 1
-    prompt = build_prompt(patch, args.max_prompt_chars, args.max_findings)
+    pre = run_static_pass(args, patch)
+    findings = pre.findings if pre is not None else []
+    prompt = build_prompt(patch, args.max_prompt_chars, args.max_findings, static=findings)
     out.write(f"=== system ===\n{prompt.request.system}\n=== user ===\n{prompt.request.prompt}")
     out.write(f"=== key {prompt.request.key()} ===\n")
     for path, reason in prompt.skipped:
         print(f"skipped {path}: {reason}", file=err)
+    for line in static_lines(pre):
+        print(line, file=err)
+    return 0
+
+
+def run_static(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    patch = read_patch(args.file, err)
+    if patch is None:
+        return 1
+    result = analyse(patch, args.source_root, ruff=find_ruff())
+    if args.json:
+        json.dump(static_json(result), out, indent=2)
+        out.write("\n")
+        return 0
+    for f in result.findings:
+        print(f"{f.path}:{f.line}  {f.severity.value}  {f.category.value}  [{f.rule}] {f.title}", file=out)
+    for line in static_lines(result):
+        print(line, file=out)
+    if not result.analysed and not result.skipped:
+        print("static analysis: no Python file in the diff adds lines", file=out)
     return 0
 
 
@@ -161,15 +237,18 @@ def review_json(result: Review, payload: dict[str, Any]) -> dict[str, Any]:
         "findings": [f.to_dict() for f in result.findings],
         "rejections": [{"index": r.index, "kind": r.kind, "detail": r.detail} for r in result.rejections],
         "over_cap": result.over_cap,
+        "duplicates": result.duplicates,
+        "static": static_json(result.static),
         "payload": payload,
     }
 
 
 def print_review(result: Review, out: TextIO) -> None:
     for f in result.findings:
+        origin = f"{f.rule}, " if f.source == "static" else ""
         print(
             f"{f.path}:{f.line}  {f.severity.value}  {f.category.value}  {f.title}  "
-            f"(confidence {f.confidence:.2f})",
+            f"({origin}confidence {f.confidence:.2f})",
             file=out,
         )
     n, files = len(result.findings), len(result.reviewed)
@@ -189,10 +268,14 @@ def print_review(result: Review, out: TextIO) -> None:
         print(f"dropped {len(result.rejections)}: {counts}", file=out)
         for r in result.rejections:
             print(f"  [{r.index}] {r.kind}: {r.detail}", file=out)
+    if result.duplicates:
+        print(f"merged {plural(result.duplicates, 'duplicate')} (same line and category)", file=out)
     if result.over_cap:
         print(f"over the cap: {plural(result.over_cap, 'lower-ranked finding')} left out", file=out)
     for path, reason in result.skipped:
         print(f"not reviewed: {path} ({reason})", file=out)
+    for line in static_lines(result.static):
+        print(line, file=out)
 
 
 def recordings_dir(args: argparse.Namespace) -> Path:
@@ -223,7 +306,11 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 return 1
             provider = Recorder(provider, recordings)
         result = review(
-            patch, provider, max_findings=args.max_findings, max_prompt_chars=args.max_prompt_chars
+            patch,
+            provider,
+            static=run_static_pass(args, patch),
+            max_findings=args.max_findings,
+            max_prompt_chars=args.max_prompt_chars,
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: review failed: {exc}", file=err)
@@ -291,6 +378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_diff(args, sys.stdout, sys.stderr)
     if args.command == "prompt":
         return run_prompt(args, sys.stdout, sys.stderr)
+    if args.command == "static":
+        return run_static(args, sys.stdout, sys.stderr)
     if args.command == "review":
         return run_review(args, sys.stdout, sys.stderr)
     return 2  # pragma: no cover - argparse rejects unknown commands first
