@@ -42,7 +42,7 @@ flowchart LR
    exact text of that line (`quote`), a severity, a category, a title, a body and a confidence.
 5. Every finding is validated and anchored: the line must be in the diff and must say what the quote says.
    Anything that fails is dropped with a reason, never moved. Static and model findings are merged, one per
-   (path, line, category), ranked worst first and capped at 10.
+   line (the most severe), ranked worst first and capped at 10.
 6. The review is printed (dry run), written to the Actions job summary, or posted as one GitHub review with a
    line comment per finding.
 
@@ -190,13 +190,13 @@ reviewed as if a PR had added it whole (`.venv/bin/python scripts/measure_static
 
 | Where | Hits | Per 1,000 lines |
 |---|---|---|
-| all files | 1,331 | 10.36 |
-| test files (80,323 lines) | 1,180 | 14.69 |
+| all files | 1,330 | 10.35 |
+| test files (80,323 lines) | 1,179 | 14.68 |
 | other files (48,129 lines) | 151 | 3.14 |
 
 F841 (unused local) is 1,012 of the hits, 873 of them in one file, `test_exceptions.py`, which assigns
-without reading on purpose; F821 is 127, 93 of them in `turtle.py`, which defines names with `exec`; 36 of
-the 61 rules never fired. Most hits on shipped code are deliberate (the standard library calls `eval` and
+without reading on purpose; F821 is 127, 93 of them in `turtle.py`, which defines names with `exec`; 37 of
+the 61 rules never fired (numbers after the day's fixes; the first run had 1,331 hits). Most hits on shipped code are deliberate (the standard library calls `eval` and
 `pickle` on purpose), so these are a ceiling on noise, not a false-positive rate. The first run found:
 
 - **two real bugs in the standard library**: CL004 flagged `test/support/__init__.py` lines 923 and 2077,
@@ -210,17 +210,39 @@ the 61 rules never fired. Most hits on shipped code are deliberate (the standard
 ### The static pre-pass on real pull requests (day 3)
 
 Every non-merge commit of this repository, reviewed as a PR (`git diff C^ C`) against its own tree
-(`.venv/bin/python scripts/measure_static_history.py`, at `22323ae`): 81 commits, 65 touching Python, 204
-Python file diffs, 10,023 added Python lines, **15 findings**. Fourteen are the eval set's seeded bugs, in
+(`.venv/bin/python scripts/measure_static_history.py`, at `d9bfbe5`): 93 commits, 77 touching Python, 245
+Python file diffs, 10,895 added Python lines, **15 findings**. Fourteen are the eval set's seeded bugs, in
 the commit that added the cases (`eb6a818`). The fifteenth is a false positive: S105 ("possible hardcoded
 password") on `TOKEN = "ghs_test_not_a_real_token"` in `tests/test_github.py`. S105 stays, at medium
-severity and confidence 0.5, because a real secret pasted into a test is still a leak.
+severity and confidence 0.5, because a real secret pasted into a test is still a leak. (A run in between,
+after the review fixes, also flagged a CL004 false positive in a test written that day: a string of code
+assigned to a variable its braces named. CL004 now skips that pattern.)
+
+### Review of the day's work (day 3)
+
+Three review agents read the day-3 diff (static pre-pass and rules; eval harness, CLI and action;
+review, prompt and posting), each confirming its claims by running code; I checked each claim before
+fixing it. 26 problems were fixed, each with a regression test. The worst:
+
+- **A PR could run code in the action.** The pre-pass ran `python -m ruff` in the PR's checkout, where
+  `-m` imports a planted `ruff.py` first; and since day 1 the action's `python -m pip` and
+  `python -c 'import json…'` ran there too. Ruff now runs as a binary, and every `python` in the action
+  runs with `-I`.
+- **A PR could crash the review** with an expression nested a few thousand deep (RecursionError in the
+  parser), **or silence it**: with `# noqa` comments (ruff now runs `--ignore-noqa`), or with a file name
+  containing a fingerprint marker (markers now count only on a line of their own).
+- **Wrong lines and wrong counts**: a lone `\r` shifted every later static finding by a line (such files
+  are now skipped), CRLF files were never checked, an "old" hit was matched by text anywhere in the file
+  instead of at its line, and two findings on one line shared one fingerprint (dedupe is now one per
+  line).
+
+One known gap stays: CL003 can't tell whether `d.update({...})` adds a key, so it flags it either way.
 
 ### Earlier days
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 492 passing | `.venv/bin/pytest` |
+| Tests | 531 passing | `.venv/bin/pytest` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 98% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Real history | every commit of this repository parses and renders: 48 commits, 122 file diffs, 0 failures at `8646d07` (another local clone, 50 Java/SQL/YAML commits: 0 failures) | `.venv/bin/python scripts/check_history.py [repo]` |
@@ -271,11 +293,11 @@ that fails tells you the command).
 - **Standard library only.** The vendors are called over raw HTTP with one retrying client: fast action
   installs, a small attack surface, and every header and retry decision is visible and tested.
 - **One review, never retried.** One notification per run, and no duplicate reviews after a timeout.
-- **Static findings are facts the model starts from, not a second opinion.** They are checked, posted as
-  they are, and listed in the prompt; the model's own finding on the same line and category replaces one
-  only when it ranks higher.
-- **The PR doesn't configure its reviewer.** Ruff runs `--isolated` with CodeLens's own rule list, so a PR
-  can't switch a rule off by editing `pyproject.toml`.
+- **Static findings are facts the model starts from, not a second opinion.** They are checked, posted, and
+  listed in the prompt; the model's own finding on the same line replaces one only when it ranks higher.
+- **The PR doesn't configure, or run code in, its reviewer.** Ruff runs `--isolated --ignore-noqa` with
+  CodeLens's own rule list, so neither `pyproject.toml` nor `# noqa` can switch a rule off, and it runs as
+  a binary so nothing in the checkout is imported.
 - **Report what the PR introduced.** Added lines, plus unchanged lines it made wrong; never what was already
   there.
 

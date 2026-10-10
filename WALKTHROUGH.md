@@ -174,14 +174,17 @@ the pre-pass also reports a hit on a shown unchanged line if the old version of 
 **Where does the old version come from?** It's rebuilt from the new file and the diff (`static.old_version`):
 for each hunk, swap its new side (context and added lines) for its old side (context and removed lines). The
 new file was already verified against the diff, so this is exact, and no git history or base checkout is
-needed. The old version goes through the same checks in a temporary directory, and a hit counts as old when
-the old version has the same rule on a line with the same text, counted per occurrence.
+needed. The old version goes through the same checks in a temporary directory. Each context line in the
+diff knows its old line number, so a hit counts as old only if the old version had the same rule and
+message on that very line. The first version matched by line text anywhere in the file, and a review agent
+built three cases where that blamed the wrong line or missed a new problem.
 
-**How are static and model findings merged?** `review.dedupe`: one finding per (path, line, side,
-category), keeping the one the ranking puts first (severity, then confidence). The plan said "keep the more
-confident one", and the existing cap test caught why that's wrong: a confident `low` would replace a less
-confident `critical` on the same line. Different categories on one line are different problems and both
-stay.
+**How are static and model findings merged?** `review.dedupe`: one finding per line, keeping the one the
+ranking puts first (severity, then confidence). The plan said "one per (path, line, category), the more
+confident one", and both halves were wrong. The existing cap test showed "more confident" lets a confident
+`low` replace a less confident `critical`. And a review agent showed the per-category part disagreed with
+posting: fingerprints identify a line, so two findings on one line shared a marker, and the one the cap held
+back counted as already posted on the next push.
 
 **Why is ruff pinned?** The static block is part of the prompt, and recordings are keyed by a hash of the
 prompt. A different ruff could word a message differently and orphan every recording. CI's `action-static`
@@ -237,7 +240,7 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 492 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 531 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
@@ -253,6 +256,15 @@ that reproduces the bug. The worst were: the CI job would have posted the sample
 real PRs; the finding cap was applied before the already-posted filter, so new findings could be starved
 forever; anyone could forge the hidden markers; and a non-UTF-8 byte in a diff crashed fingerprinting and
 recording (after the paid model call).
+
+On day 3, three agents reviewed the static pre-pass, the eval harness and the posting changes, and 26
+confirmed problems were fixed, each with a regression test. The one I'd tell first: the
+pre-pass ran `python -m ruff` inside the PR's checkout, and `-m` imports from the current directory first,
+so a PR adding `ruff.py` ran its own code with the job's API key in the environment, and the review just
+reported no findings. Checking for the same pattern found it in the action since day 1 (`python -m pip`,
+`python -c 'import json'`); everything now runs ruff as a binary and Python with `-I`. Others: a deeply
+nested expression crashed the review (RecursionError), `# noqa` comments silenced rules, a file name could
+plant a fingerprint marker, and a lone `\r` shifted static findings by a line.
 
 ## What's not done yet
 
