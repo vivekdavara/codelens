@@ -435,3 +435,39 @@ def test_deeply_nested_code_cannot_crash_the_review(tmp_path: Path, depth: int) 
     result = run(make_pr(tmp_path, {}, {"m.py": after}), tmp_path)
     assert result.analysed == ["m.py"]  # ruff still reports; CodeLens's rules just see nothing
     assert "F841" in [f.rule for f in result.findings]
+
+
+def test_an_old_hit_must_be_on_the_same_line_to_count(tmp_path: Path) -> None:
+    # Both sleeps are unchanged; only b's became a problem. Matching by text alone blamed a's line and
+    # called b's old.
+    before = "import time\n\ndef b():\n    time.sleep(1)\nasync def a():\n    time.sleep(1)\n"
+    after = before.replace("def b", "async def b")
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert [(f.line, f.rule) for f in result.findings] == [(4, "ASYNC251")] and result.existing == 1
+
+
+def test_an_old_hit_outside_the_diff_does_not_hide_a_new_one(tmp_path: Path) -> None:
+    before = (
+        "import time\n\n\ndef b():\n    time.sleep(1)\n" + "\n" * 10 + "async def a():\n    time.sleep(1)\n"
+    )
+    after = before.replace("def b", "async def b")
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert [(f.line, f.rule) for f in result.findings] == [(5, "ASYNC251")]
+    assert (result.outside, result.existing) == (1, 0)
+
+
+def test_an_old_hit_must_have_the_same_message(tmp_path: Path) -> None:
+    # `missing` was undefined before; the PR makes `os` undefined on the same, unchanged line.
+    before = "import os\n\ndef f():\n    return os.sep + missing\n"
+    after = before.replace("import os", "import sys")
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert [(f.line, f.title) for f in result.findings] == [(4, "Undefined name `os`")]
+    assert result.existing == 1
+
+
+def test_line_numbers_in_messages_do_not_make_an_old_hit_new(tmp_path: Path) -> None:
+    # F811 names the line of the first definition, which moves when the PR adds lines above it.
+    before = "def f():\n    pass\ndef f():\n    pass\n"  # F811 on line 3: "... from line 1"
+    after = "import sys\n" + before  # now on line 4: "... from line 2"
+    result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
+    assert result.findings == [] and result.existing == 1

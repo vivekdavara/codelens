@@ -538,7 +538,7 @@ def _hits(
 
 def _old_hits(
     files: list[tuple[FileDiff, list[str]]], ruff: Sequence[str] | None
-) -> tuple[list[list[rules.Hit]], list[list[str]]] | None:
+) -> list[list[rules.Hit]] | None:
     """The same checks on every file's old version (empty for added files), or ``None`` if they failed."""
     olds = [old_version(f, lines) if f.status is not FileStatus.ADDED else [] for f, lines in files]
     scratch = StaticResult()
@@ -548,11 +548,23 @@ def _old_hits(
             (root / file.path).parent.mkdir(parents=True, exist_ok=True)
             (root / file.path).write_text("\n".join(old), encoding="utf-8")
         hits = _hits(root, [(f.path, old) for (f, _), old in zip(files, olds, strict=True)], ruff, scratch)
-    return None if scratch.notes else (hits, olds)
+    return None if scratch.notes else hits
 
 
-def _signature(code: str, lines: list[str], line: int) -> tuple[str, str]:
-    return code, " ".join(lines[line - 1].split()) if 0 < line <= len(lines) else ""
+_DIGITS = re.compile(r"\d+")
+
+
+def _key(hit: rules.Hit) -> tuple[str, str]:
+    """A hit's identity across versions: its rule and message, with numbers blurred because F811's "from
+    line 3" moves when lines are added above."""
+    return hit.code, _DIGITS.sub("#", " ".join(hit.message.split()))
+
+
+def _old_by_line(hits: list[rules.Hit]) -> dict[int, Counter[tuple[str, str]]]:
+    by_line: dict[int, Counter[tuple[str, str]]] = {}
+    for hit in hits:
+        by_line.setdefault(hit.line, Counter())[_key(hit)] += 1
+    return by_line
 
 
 def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> StaticResult:
@@ -561,7 +573,8 @@ def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> Stati
 
     That is every hit on an added line, and every hit on an unchanged line shown in the diff that the old
     version didn't have: making a function ``async`` makes its unchanged ``time.sleep`` block the event loop.
-    The old version is rebuilt from the new one and the diff (:func:`old_version`) and checked the same way.
+    The old version is rebuilt from the new one and the diff (:func:`old_version`) and checked the same way;
+    a hit on an unchanged line is old if the old version had the same rule and message on that line.
     Hits on lines the diff doesn't show can't be commented on and are only counted.
 
     ``ruff`` is the command to run (see :func:`find_ruff`); with ``None`` only CodeLens's own rules run and a
@@ -593,15 +606,20 @@ def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> Stati
     old = _old_hits(files, ruff) if not result.notes or ruff is None else None
     for i, (file, lines) in enumerate(files):
         added, shown = set(file.added_lines()), file.commentable_lines(Side.RIGHT)
-        before = Counter(_signature(h.code, old[1][i], h.line) for h in old[0][i]) if old else Counter()
-        for hit in sorted(hits[i], key=lambda h: (h.line, h.code)):
+        # Each unchanged line the diff shows knows where it was in the old version, so an old hit counts
+        # only if it was on that very line, with the same rule and message.
+        old_line = {
+            d.new_lineno: d.old_lineno for d in file.lines() if d.kind is LineKind.CONTEXT and d.new_lineno
+        }
+        before = _old_by_line(old[i]) if old is not None else {}
+        for hit in sorted(hits[i], key=lambda h: (h.line, h.code, h.message)):
             if hit.line not in shown or hit.line > len(lines):
                 result.outside += 1
                 continue
             if hit.line not in added:
-                signature = _signature(hit.code, lines, hit.line)
-                if old is None or before[signature] > 0:
-                    before[signature] -= 1
+                there = before.get(old_line.get(hit.line) or 0, Counter())
+                if old is None or there[_key(hit)] > 0:
+                    there[_key(hit)] -= 1
                     result.existing += 1
                     continue
             finding = _finding(file, lines, hit, patch)
