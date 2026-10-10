@@ -42,11 +42,15 @@ _NO_RETRY = RetryPolicy(attempts=1)
 # A fence opens and closes at the start of a line; an inline code span starts at a backtick that isn't
 # escaped. Anything else that looks like code to a naive scan (an escaped backtick, a stray ```) is text to
 # GitHub, so mentions in it would be live.
-_CODE = re.compile(r"(^```.*?^```|(?<![\\`])`[^`\n]+`)", re.DOTALL | re.MULTILINE)
+# A span also closes only on a run of exactly one backtick (CommonMark): in "`@a``" the "``" closes
+# nothing, so @a is text and would ping.
+_CODE = re.compile(r"(^```.*?^```|(?<![\\`])`[^`\n]+`(?!`))", re.DOTALL | re.MULTILINE)
 _MENTION = re.compile(r"@(?=[A-Za-z0-9])")
 DEFAULT_AUTHOR = "github-actions[bot]"
 """The login CodeLens posts as with the Actions token; only its comments' markers count as already posted."""
-_MARKER = re.compile(r"<!-- codelens:([0-9a-f]{16}) -->")
+# CodeLens writes each marker on a line of its own (comment_body), and only such a line counts: a marker
+# inside other text, such as a PR's file name listed in a summary, is not one of CodeLens's.
+_MARKER = re.compile(r"^<!-- codelens:([0-9a-f]{16}) -->\r?$", re.MULTILINE)
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 MAX_PAGES = 10
 MAX_BODY_CHARS = 60_000

@@ -58,6 +58,13 @@ def test_defang_breaks_mentions_outside_code_only() -> None:
     assert defang("a lone @ sign") == "a lone @ sign"
 
 
+def test_a_longer_backtick_run_does_not_close_a_code_span() -> None:
+    # CommonMark closes a span only on a run of the same length, so GitHub shows this @admin as text and
+    # pings it. Static titles can carry it without any model: F524 quotes format placeholders.
+    assert defang("missing `@admin``") == "missing `@\u2060admin``"
+    assert defang("`@ok` then `@bad``") == "`@ok` then `@\u2060bad``"
+
+
 def test_comment_body() -> None:
     assert comment_body(finding()) == (
         "**Clamping hides the error**\n\n"
@@ -332,6 +339,15 @@ def test_another_login_can_be_named(fake_server: FakeServer) -> None:
     assert posted_fingerprints("o/r", 3, TOKEN, api_url=fake_server.url, timeout=5, author="my-app[bot]") == {
         fingerprint(finding())
     }
+
+
+def test_a_marker_inside_other_text_does_not_count(fake_server: FakeServer) -> None:
+    # A PR's file name can contain marker text, and summaries list file names inline: only a marker on a
+    # line of its own, as comment_body writes it, is CodeLens's (with or without a CRLF line ending).
+    planted, real = fingerprint(finding()), fingerprint(finding(quote="other"))
+    summary = f"Not checked by static analysis: `app/x<!-- codelens:{planted} -->.py` (symlink)."
+    fake_server.reply(Reply(200, []), Reply(200, [bot(summary), bot(f"ok\r\n<!-- codelens:{real} -->\r\n")]))
+    assert posted_fingerprints("o/r", 3, TOKEN, api_url=fake_server.url, timeout=5) == {real}
 
 
 def test_model_text_cannot_plant_a_marker() -> None:
