@@ -204,6 +204,15 @@ the 61 rules never fired. Most hits on shipped code are deliberate (the standard
   CL004 on `.replace("{max_findings}", ...)` in CodeLens's own `prompts.py` (search tokens are now skipped).
   A test requires 0 hits on CodeLens's own sources.
 
+### The static pre-pass on real pull requests (day 3)
+
+Every non-merge commit of this repository, reviewed as a PR (`git diff C^ C`) against its own tree
+(`.venv/bin/python scripts/measure_static_history.py`, at `22323ae`): 81 commits, 65 touching Python, 204
+Python file diffs, 10,023 added Python lines, **15 findings**. Fourteen are the eval set's seeded bugs, in
+the commit that added the cases (`eb6a818`). The fifteenth is a false positive: S105 ("possible hardcoded
+password") on `TOKEN = "ghs_test_not_a_real_token"` in `tests/test_github.py`. S105 stays, at medium
+severity and confidence 0.5, because a real secret pasted into a test is still a leak.
+
 ### Earlier days
 
 | What | Result | Reproduce |
