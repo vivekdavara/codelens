@@ -144,10 +144,18 @@ def test_a_file_shorter_than_the_diff_is_skipped(tmp_path: Path) -> None:
 
 
 def test_a_crlf_file_matches_its_diff(tmp_path: Path) -> None:
-    patch = make_pr(tmp_path, {}, {"m.py": "def f():\r\n    unused = 1\r\n"})
-    assert [(f.line, f.rule, f.quote) for f in run(patch, tmp_path).findings] == [
-        (2, "F841", "    unused = 1")
-    ]
+    make_pr(tmp_path, {}, {"other.py": "x = 1\n"})
+    (tmp_path / "m.py").write_bytes(b"def f():\r\n    unused = 1\r\n")
+    git(tmp_path, "add", "m.py")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    raw = subprocess.run(
+        ["git", "diff", "--cached", "--", "m.py"], cwd=tmp_path, env=env, capture_output=True
+    )
+    patch = parse_patch(decode_diff(raw.stdout))  # bytes, as the CLI reads it: content lines keep "\r"
+    assert patch.files[0].hunks[0].lines[0].content == "def f():\r"
+    # The quote is the diff line's own text, "\r" included; the quote check and fingerprints ignore it.
+    findings = run(patch, tmp_path).findings
+    assert [(f.line, f.rule, f.quote) for f in findings] == [(2, "F841", "    unused = 1\r")]
 
 
 def test_files_that_are_not_checked(tmp_path: Path) -> None:
@@ -306,15 +314,45 @@ def test_unreadable_files_are_skipped_with_the_reason(
     assert run(patch, tmp_path).skipped == [("a.py", "unreadable: Too many levels of symbolic links")]
 
 
-def test_a_hit_that_does_not_anchor_is_dropped(tmp_path: Path) -> None:
-    # The same path twice: findings anchor on the first entry, whose text is not the file's.
+def test_a_path_listed_twice_anchors_findings_on_its_own_entry(tmp_path: Path) -> None:
+    # Looking the path up again would find the first entry, whose lines aren't the file's.
     diff = (
         "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1,2 @@\n x = 1\n+other = 2\n"
         "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1,2 @@\n x = 1\n+def f():\n"
     )
     (tmp_path / "m.py").write_text("x = 1\ndef f():\n")
     result = run(parse_patch(diff), tmp_path)
-    assert result.findings == [] and result.analysed == ["m.py"]
+    assert [(f.line, f.rule) for f in result.findings] == [(2, "invalid-syntax")]
+    assert result.analysed == ["m.py"] and len(result.skipped) == 1
+
+
+def test_a_symlink_replaced_by_a_file_is_checked(tmp_path: Path) -> None:
+    # git shows the type change as a deletion and an addition of the same path.
+    git(tmp_path, "init", "-q")
+    (tmp_path / "real.py").write_text("x = 1\n")
+    (tmp_path / "m.py").symlink_to("real.py")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    (tmp_path / "m.py").unlink()
+    (tmp_path / "m.py").write_text("def f():\n    unused = 1\n")
+    git(tmp_path, "add", "-A")
+    patch = parse_patch(decode_diff(git(tmp_path, "diff", "--cached").encode()))
+    assert [f.status.value for f in patch] == ["deleted", "added"]
+    assert [(f.line, f.rule) for f in run(patch, tmp_path).findings] == [(2, "F841")]
+
+
+def test_noqa_comments_in_the_pr_cannot_switch_rules_off(tmp_path: Path) -> None:
+    after = "# ruff: noqa\ndef f(blob):\n    unused = 1  # noqa: F841\n    return eval(blob)\n"
+    result = run(make_pr(tmp_path, {}, {"m.py": after}), tmp_path)
+    assert [(f.line, f.rule) for f in result.findings] == [(3, "F841"), (4, "S307")]
+
+
+def test_messages_lose_control_characters(tmp_path: Path) -> None:
+    # F822 quotes `__all__` strings with their escapes decoded: ESC and NUL would reach the prompt raw.
+    after = '__all__ = ["x\\x1b[2J\\x00y"]\n'
+    (finding,) = run(make_pr(tmp_path, {}, {"m.py": after}), tmp_path).findings
+    assert finding.rule == "F822" and "\x1b" not in finding.title and "\x00" not in finding.title
+    assert "x?[2J?y" in finding.title
 
 
 def test_a_change_that_makes_an_unchanged_line_wrong_is_reported(tmp_path: Path) -> None:
@@ -389,3 +427,11 @@ def test_a_file_with_a_lone_carriage_return_is_skipped(tmp_path: Path) -> None:
     assert result.skipped == [
         ("m.py", "a carriage return without a line feed (git and Python would number its lines differently)")
     ]
+
+
+@pytest.mark.parametrize("depth", [600, 5000])
+def test_deeply_nested_code_cannot_crash_the_review(tmp_path: Path, depth: int) -> None:
+    after = "def total(a):\n    unused = 1\n    return " + " + ".join(["a"] * depth) + "\n"
+    result = run(make_pr(tmp_path, {}, {"m.py": after}), tmp_path)
+    assert result.analysed == ["m.py"]  # ruff still reports; CodeLens's rules just see nothing
+    assert "F841" in [f.rule for f in result.findings]

@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -382,7 +383,11 @@ def _matches(file: FileDiff, lines: list[str]) -> bool:
     """Whether every line the diff shows on the new side is the same in ``lines`` (the file on disk)."""
     for diff_line in file.lines():
         n = diff_line.new_lineno
-        if n is not None and (n > len(lines) or lines[n - 1].removesuffix("\r") != diff_line.content):
+        # A CRLF file's diff, read as bytes, keeps the "\r" too (the parser only drops it when the whole
+        # diff is CRLF), so compare both sides without it.
+        if n is not None and (
+            n > len(lines) or lines[n - 1].removesuffix("\r") != diff_line.content.removesuffix("\r")
+        ):
             return False
     return True
 
@@ -418,7 +423,10 @@ def _run_ruff(
         return {}
     result.tool = version.stdout.strip()
     index = {(root / p).resolve(): i for i, p in enumerate(paths)}
-    command = [*ruff, "check", "--isolated", "--no-cache", "--exit-zero", "--output-format", "json"]
+    # --isolated ignores config files and --ignore-noqa suppression comments: both are the PR author's to
+    # write, and neither may switch off what CodeLens checks.
+    command = [*ruff, "check", "--isolated", "--ignore-noqa", "--no-cache", "--exit-zero"]
+    command += ["--output-format", "json"]
     command += ["--target-version", TARGET_VERSION, "--select", ",".join(ruff_codes()), "--"]
     found: dict[int, list[rules.Hit]] = {}
     for start in range(0, len(paths), _CHUNK):
@@ -467,7 +475,9 @@ def _one_syntax_error(hits: list[rules.Hit]) -> list[rules.Hit]:
 
 
 def _title(code: str, message: str) -> str:
-    text = " ".join(message.split())
+    # Messages quote the code (F822 quotes `__all__` strings with their escapes decoded), so they get the
+    # same treatment as the diff: one line, no control characters, a length cap.
+    text = " ".join("".join("?" if unicodedata.category(ch) == "Cc" else ch for ch in message).split())
     if code == "invalid-syntax":
         text = f"Syntax error: {text}"
     text = text[:1].upper() + text[1:]
@@ -489,7 +499,11 @@ def _finding(file: FileDiff, lines: list[str], hit: rules.Hit, patch: PatchSet) 
         source="static",
         rule=hit.code,
     )
-    placed = anchored(finding, patch)
+    # Against this file's own entry: a diff can list a path twice (a symlink replaced by a regular file is a
+    # deletion and an addition), and looking it up by path would find the other entry.
+    placed = anchored(finding, PatchSet([file]))
+    # Can't fail today (the line is shown and its text was checked against the diff), but if it ever did,
+    # dropping the finding would be safer than crashing the review.
     return placed if isinstance(placed, Finding) else None
 
 
@@ -591,6 +605,6 @@ def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> Stati
                     result.existing += 1
                     continue
             finding = _finding(file, lines, hit, patch)
-            if finding is not None:
+            if finding is not None:  # pragma: no branch (see _finding)
                 result.findings.append(finding)
     return result

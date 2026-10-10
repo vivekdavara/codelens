@@ -16,6 +16,17 @@ def test_a_file_that_does_not_parse_has_no_hits() -> None:
     assert check("x = 1\0\n") == []
 
 
+@pytest.mark.parametrize("depth", [600, 5000])  # the visitors give out first, then the parser itself
+def test_code_too_deep_to_walk_has_no_hits_instead_of_crashing(depth: int) -> None:
+    assert check("def f(a):\n    return " + " + ".join(["a"] * depth) + "\n") == []
+
+
+def test_a_byte_order_mark_does_not_hide_a_file() -> None:
+    assert [h.code for h in check("\ufeffdef f(items):\n    for x in items:\n        items.remove(x)\n")] == [
+        "CL003"
+    ]
+
+
 # CL001 unawaited coroutine ----------------------------------------------------------------------------------
 
 

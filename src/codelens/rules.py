@@ -32,12 +32,17 @@ class Hit:
 
 
 def check(source: str) -> list[Hit]:
-    """Every rule's hits in ``source``, by line. A file that doesn't parse has none (ruff reports that)."""
+    """Every rule's hits in ``source``, by line. A file that doesn't parse has none (ruff reports that).
+
+    The source is the PR's, so nothing in it may crash the review: an expression nested a few thousand
+    deep makes the parser, or a few hundred deep these recursive visitors, run out of stack, and such a
+    file simply gets no hits from these rules.
+    """
     try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):  # ValueError: source with null bytes
+        tree = ast.parse(source.removeprefix("\ufeff"))  # a UTF-8 BOM is fine in a file, not in a str
+        hits = [*_unawaited(tree), *_unreachable(tree), *_loop_mutations(tree), *_missing_f_prefix(tree)]
+    except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: source with null bytes
         return []
-    hits = [*_unawaited(tree), *_unreachable(tree), *_loop_mutations(tree), *_missing_f_prefix(tree)]
     return sorted(set(hits), key=lambda h: (h.line, h.code, h.message))
 
 
