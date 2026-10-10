@@ -4,9 +4,11 @@ from typing import Any
 import pytest
 
 from codelens.diff import parse_patch
-from codelens.findings import FindingsFormatError, Severity
+from codelens.findings import Category, Finding, FindingsFormatError, Severity
+from codelens.prompts import build_prompt
 from codelens.providers import Completion, ProviderError, Request, Usage
-from codelens.review import review
+from codelens.review import dedupe, review
+from codelens.static import StaticResult
 
 DIFF = """\
 diff --git a/svc/pay.py b/svc/pay.py
@@ -114,7 +116,9 @@ def test_findings_on_files_the_model_was_not_shown_are_rejected() -> None:
 
 
 def test_the_cap_keeps_the_worst_findings() -> None:
-    items = [item(line, "low", 0.5) for line in (1, 3, 4, 5, 6, 11, 12, 13)] + [item(12, "critical", 0.4)]
+    # Line 12's critical is a different category from its low, so the two are different problems.
+    critical = item(12, "critical", 0.4, category="security")
+    items = [item(line, "low", 0.5) for line in (1, 3, 4, 5, 6, 11, 12, 13)] + [critical]
     result = review(PATCH, Scripted(answer(*items)), max_findings=3)
     assert [(f.line, f.severity.value) for f in result.findings] == [(12, "critical"), (1, "low"), (3, "low")]
     assert result.over_cap == 6
@@ -150,3 +154,73 @@ def test_provider_errors_propagate() -> None:
 def test_limits_must_be_positive(cap: int, budget: int) -> None:
     with pytest.raises(ValueError, match="must be positive"):
         review(PATCH, Scripted(answer()), max_findings=cap, max_prompt_chars=budget)
+
+
+def static_finding(line: int, severity: str = "medium", confidence: float = 0.6, **extra: Any) -> Finding:
+    fields: dict[str, Any] = {
+        "path": "svc/pay.py",
+        "line": line,
+        "severity": Severity(severity),
+        "category": Category.BUG,
+        "title": f"Static problem on line {line}",
+        "body": "Found by ruff rule `F841`.",
+        "confidence": confidence,
+        "quote": "    " + item(line)["quote"],
+        "source": "static",
+        "rule": "F841",
+    }
+    return Finding(**{**fields, **extra})
+
+
+def test_dedupe_keeps_what_the_ranking_puts_first() -> None:
+    low, critical = static_finding(4, "low", 0.9), static_finding(4, "critical", 0.4)
+    assert dedupe([low, critical]) == ([critical], 1)  # not the more confident low
+    sure, unsure = static_finding(4, confidence=0.9), static_finding(4, confidence=0.5)
+    assert dedupe([unsure, sure]) == ([sure], 1)
+    first, second = static_finding(4), static_finding(4, source="llm", rule="")
+    assert dedupe([first, second]) == ([first], 1)  # a full tie goes to the first: static, by convention
+
+
+def test_dedupe_keeps_different_problems_on_one_line() -> None:
+    bug, security = static_finding(4), static_finding(4, category=Category.SECURITY)
+    other_line, other_file = static_finding(5), static_finding(4, path="svc/other.py")
+    assert dedupe([bug, security, other_line, other_file]) == ([bug, security, other_line, other_file], 0)
+
+
+def test_static_findings_are_listed_in_the_prompt_and_merged_with_the_models() -> None:
+    pre = StaticResult(findings=[static_finding(10, "medium", 0.6), static_finding(4, "low", 0.6)])
+    provider = Scripted(answer(item(10, "high", 0.9), item(6, "low", 0.5)))
+    result = review(PATCH, provider, static=pre)
+    (request,) = provider.requests
+    assert request.prompt.endswith(
+        "</diff>\n\n<static_analysis>\n"
+        + request.prompt.split("<static_analysis>\n", 1)[1].split("\n", 1)[0]
+        + "\n- svc/pay.py:4 [F841] Static problem on line 4\n"
+        "- svc/pay.py:10 [F841] Static problem on line 10\n</static_analysis>\n"
+    )
+    # Line 10: the model's high replaces ruff's medium; line 4 is static only, line 6 the model's only.
+    assert [(f.line, f.source, f.severity.value) for f in result.findings] == [
+        (10, "llm", "high"),
+        (4, "static", "low"),
+        (6, "llm", "low"),
+    ]
+    assert result.duplicates == 1 and result.static is pre
+
+
+def test_without_static_findings_the_prompt_is_unchanged() -> None:
+    provider = Scripted(answer())
+    review(PATCH, provider, static=StaticResult())
+    assert provider.requests[0].key() == build_prompt(PATCH).request.key()
+
+
+def test_static_findings_survive_when_no_file_fits_the_prompt() -> None:
+    provider = Scripted(answer())
+    result = review(PATCH, provider, static=StaticResult(findings=[static_finding(4)]), max_prompt_chars=10)
+    assert provider.requests == [] and result.reviewed == []
+    assert [(f.line, f.source) for f in result.findings] == [(4, "static")]
+
+
+def test_static_findings_count_against_the_cap() -> None:
+    pre = StaticResult(findings=[static_finding(line, "critical") for line in (2, 3, 4)])
+    result = review(PATCH, Scripted(answer(item(12, "low"))), static=pre, max_findings=2)
+    assert [f.line for f in result.findings] == [2, 3] and [f.line for f in result.held] == [4, 12]

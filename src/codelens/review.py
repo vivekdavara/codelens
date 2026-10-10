@@ -7,14 +7,16 @@ files the model was shown. Nothing here talks to GitHub; posting is :mod:`codele
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from codelens.diff import PatchSet
 from codelens.findings import Finding, Rejection, check_response
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import Provider, Usage
+from codelens.static import StaticResult
 
-__all__ = ["Review", "rank", "review"]
+__all__ = ["Review", "dedupe", "rank", "review"]
 
 
 @dataclass
@@ -37,6 +39,10 @@ class Review:
     provider: str = ""
     model: str = ""
     usage: Usage = field(default_factory=Usage)
+    static: StaticResult | None = None
+    """What the static pre-pass checked and found, or ``None`` when it didn't run."""
+    duplicates: int = 0
+    """Findings merged into another one on the same line with the same category (see :func:`dedupe`)."""
 
     def rejection_counts(self) -> dict[str, int]:
         return dict(sorted(Counter(r.kind for r in self.rejections).items()))
@@ -44,37 +50,68 @@ class Review:
 
 def rank(findings: list[Finding]) -> list[Finding]:
     """Worst first: severity, then confidence, then position, so equal findings keep a stable order."""
-    return sorted(findings, key=lambda f: (f.severity.rank, -f.confidence, f.path, f.line))
+    return sorted(findings, key=lambda f: (*_order(f), f.path, f.line))
+
+
+def _order(finding: Finding) -> tuple[int, float]:
+    return finding.severity.rank, -finding.confidence
+
+
+def dedupe(findings: Iterable[Finding]) -> tuple[list[Finding], int]:
+    """One finding per (path, line, side, category): the one :func:`rank` puts first, and on a tie the first.
+
+    Keeping simply the most confident one would let a confident ``low`` replace a less confident
+    ``critical`` on the same line. Callers put static findings first, so a full tie goes to the
+    reproducible one. Two findings of different categories on one line are different problems and both
+    stay. Returns the kept findings in first-seen order and how many were merged away.
+    """
+    best: dict[tuple[str, int, str, str], Finding] = {}
+    total = 0
+    for finding in findings:
+        total += 1
+        key = (finding.path, finding.line, finding.side.value, finding.category.value)
+        if key not in best or _order(finding) < _order(best[key]):
+            best[key] = finding
+    return list(best.values()), total - len(best)
 
 
 def review(
     patch: PatchSet,
     provider: Provider,
     *,
+    static: StaticResult | None = None,
     max_findings: int = MAX_FINDINGS,
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
 ) -> Review:
-    """Review ``patch`` with one provider call.
+    """Review ``patch`` with one provider call, adding the static pre-pass's findings if it ran.
 
-    No call is made when no file is reviewable (only deletions, renames or binaries): such PRs cost nothing.
+    Static findings are listed in the prompt and merged with the model's (:func:`dedupe`) before ranking
+    and the cap. No call is made when no file is reviewable (only deletions, renames or binaries): such PRs
+    cost nothing, and static findings, which don't depend on the prompt, are still returned.
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
     if max_findings < 1 or max_prompt_chars < 1:
         raise ValueError("max_findings and max_prompt_chars must be positive")
-    prompt = build_prompt(patch, max_prompt_chars, max_findings)  # the model is asked for the same cap
+    pre = static.findings if static is not None else []
+    # The model is asked for the same cap the review applies.
+    prompt = build_prompt(patch, max_prompt_chars, max_findings, static=pre)
     result = Review(
-        [], skipped=prompt.skipped, reviewed=[f.path for f in prompt.files], provider=provider.name
+        [],
+        skipped=prompt.skipped,
+        reviewed=[f.path for f in prompt.files],
+        provider=provider.name,
+        static=static,
     )
-    if not prompt.files:
-        return result
-    completion = provider.complete(prompt.request)
-    # Anchor against the files that were shown: a finding on a file the model never saw is a guess.
-    findings, result.rejections = check_response(completion.text, PatchSet(prompt.files))
-    ranked = rank(findings)
+    found: list[Finding] = []
+    if prompt.files:
+        completion = provider.complete(prompt.request)
+        # Anchor against the files that were shown: a finding on a file the model never saw is a guess.
+        found, result.rejections = check_response(completion.text, PatchSet(prompt.files))
+        result.model, result.usage = completion.model, completion.usage
+    merged, result.duplicates = dedupe([*pre, *found])
+    ranked = rank(merged)
     result.findings, result.held = ranked[:max_findings], ranked[max_findings:]
     result.max_findings = max_findings
     result.over_cap = len(result.held)
-    result.model = completion.model
-    result.usage = completion.usage
     return result

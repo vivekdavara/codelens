@@ -8,10 +8,11 @@ must be re-recorded, not silently replayed against old answers.
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from codelens.diff import FileDiff, FileStatus, PatchSet
-from codelens.findings import FINDINGS_SCHEMA
+from codelens.findings import FINDINGS_SCHEMA, Finding
 from codelens.providers import Request
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "SYSTEM_PROMPT",
     "ReviewPrompt",
     "build_prompt",
+    "render_static",
     "system_prompt",
     "unsafe_path",
 ]
@@ -167,8 +169,37 @@ def budget_rank(file: FileDiff) -> int:
     return 0
 
 
+MAX_STATIC_LISTED = 50
+"""Static findings listed in one prompt; a file with hundreds of hits shouldn't crowd out the diff."""
+_STATIC_LEAD = (
+    "Static analysis (ruff and CodeLens's own rules) already reported these on lines this pull request "
+    "adds. They are checked and will be posted as they are: report one of these lines again only if you can "
+    "explain a consequence its message misses."
+)
+
+
+def render_static(findings: Sequence[Finding], files: Sequence[FileDiff]) -> str:
+    """The ``<static_analysis>`` block listing static findings on ``files``, or "" when there are none.
+
+    Each item sits behind a ``- `` margin, like the diff's lines, so no text in it can start a line of its
+    own; titles are one line by construction and are cleaned of line breaks anyway.
+    """
+    order = {file.path: i for i, file in enumerate(files)}
+    shown = sorted((f for f in findings if f.path in order), key=lambda f: (order[f.path], f.line, f.rule))
+    if not shown:
+        return ""
+    items = [f"- {f.path}:{f.line} [{f.rule}] {f.title}".translate(_LINE_BREAKS) for f in shown]
+    if len(items) > MAX_STATIC_LISTED:
+        items = [*items[:MAX_STATIC_LISTED], f"- and {len(items) - MAX_STATIC_LISTED:,} more"]
+    return "\n".join(["<static_analysis>", _STATIC_LEAD, *items, "</static_analysis>"]) + "\n"
+
+
 def build_prompt(
-    patch: PatchSet, max_chars: int = DEFAULT_MAX_PROMPT_CHARS, max_findings: int = MAX_FINDINGS
+    patch: PatchSet,
+    max_chars: int = DEFAULT_MAX_PROMPT_CHARS,
+    max_findings: int = MAX_FINDINGS,
+    *,
+    static: Sequence[Finding] = (),
 ) -> ReviewPrompt:
     """Render the reviewable files into one prompt of at most ``max_chars`` characters of diff.
 
@@ -177,6 +208,10 @@ def build_prompt(
     then prose, then lock and generated files (:func:`budget_rank`), in diff order within each; a file that
     doesn't fit is skipped whole, never cut mid-hunk, and smaller files after it can still fit. The chosen
     files are shown in diff order.
+
+    ``static`` findings on the chosen files are listed after the diff (:func:`render_static`), outside the
+    budget. With none, the prompt is exactly what it was before the static pre-pass existed, so recordings
+    of reviews without static findings stay valid.
     """
     system = system_prompt(max_findings)
     prompt = ReviewPrompt(Request(system, "", FINDINGS_SCHEMA))
@@ -204,5 +239,7 @@ def build_prompt(
     count = len(prompt.files)
     header = f"Review this pull request diff ({count} file{'s' if count != 1 else ''} shown)."
     body = "\n\n".join(rendered)
-    prompt.request = Request(system, f"{header}\n\n<diff>\n{body}\n</diff>\n", FINDINGS_SCHEMA)
+    grounding = render_static(static, prompt.files)
+    user = f"{header}\n\n<diff>\n{body}\n</diff>\n" + (f"\n{grounding}" if grounding else "")
+    prompt.request = Request(system, user, FINDINGS_SCHEMA)
     return prompt
