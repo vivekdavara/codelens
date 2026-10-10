@@ -1,0 +1,20 @@
+{
+  "summary": "Adds retries with backoff to the HTTP client.",
+  "bugs": [
+    {
+      "path": "net/client.py",
+      "quote": "time.sleep(backoff * 2**attempt)",
+      "category": "bug",
+      "also": [
+        "continue"
+      ],
+      "why": "The sleep comes after continue, so retries never back off."
+    },
+    {
+      "path": "net/client.py",
+      "quote": "return None",
+      "category": "bug",
+      "why": "After the last attempt the timeout is swallowed and None returned to callers expecting bytes."
+    }
+  ]
+}

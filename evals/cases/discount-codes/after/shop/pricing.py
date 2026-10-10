@@ -1,0 +1,16 @@
+from decimal import Decimal
+
+TAX_RATE = Decimal("0.08")
+DISCOUNTS = {"SPRING10": Decimal("0.10"), "VIP20": Decimal("0.20")}
+
+
+def line_total(price: Decimal, quantity: int) -> Decimal:
+    return price * quantity
+
+
+def order_total(lines: list[tuple[Decimal, int]], code: str | None = None) -> Decimal:
+    subtotal = sum((line_total(p, q) for p, q in lines), Decimal("0"))
+    if code:
+        rate = DISCOUNTS[code]
+        discounted = subtotal * (1 - rate)
+    return (subtotal * (1 + TAX_RATE)).quantize(Decimal("0.01"))

@@ -1,0 +1,18 @@
+diff --git a/stats/summary.py b/stats/summary.py
+index e3d44e9..0bd9c07 100644
+--- a/stats/summary.py
++++ b/stats/summary.py
+@@ -5,3 +5,13 @@ def mean(values: Sequence[float]) -> float:
+     if not values:
+         raise ValueError("mean of no values")
+     return sum(values) / len(values)
++
++
++def median(values: Sequence[float]) -> float:
++    if not values:
++        raise ValueError("median of no values")
++    ordered = sorted(values)
++    middle = len(ordered) // 2
++    if len(ordered) % 2:
++        return ordered[middle]
++    return (ordered[middle - 1] + ordered[middle]) / 2

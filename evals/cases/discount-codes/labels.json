@@ -1,0 +1,20 @@
+{
+  "summary": "Adds discount codes to order totals.",
+  "bugs": [
+    {
+      "path": "shop/pricing.py",
+      "quote": "rate = DISCOUNTS[code]",
+      "category": "bug",
+      "why": "An unknown or mistyped code raises KeyError instead of being rejected."
+    },
+    {
+      "path": "shop/pricing.py",
+      "quote": "discounted = subtotal * (1 - rate)",
+      "category": "bug",
+      "also": [
+        "return (subtotal * (1 + TAX_RATE))"
+      ],
+      "why": "The discounted amount is computed and never used: the total ignores the code."
+    }
+  ]
+}

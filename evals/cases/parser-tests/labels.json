@@ -1,0 +1,17 @@
+{
+  "summary": "Adds tests for the config parser.",
+  "bugs": [
+    {
+      "path": "tests/test_parse.py",
+      "quote": "assert (result == {\"host\": \"db\", \"port\": \"5432\"}, \"parsed pairs\")",
+      "category": "bug",
+      "why": "An assert on a non-empty tuple always passes: the test checks nothing."
+    },
+    {
+      "path": "tests/test_parse.py",
+      "quote": "with pytest.raises(Exception):",
+      "category": "test",
+      "why": "Any exception passes, a NameError included; expect ValueError."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "summary": "Adds API token checks to the webhook endpoint.",
+  "bugs": [
+    {
+      "path": "web/hooks.py",
+      "quote": "if token == expected_token():",
+      "category": "security",
+      "why": "== on a secret leaks timing; use hmac.compare_digest."
+    }
+  ]
+}

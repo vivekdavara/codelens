@@ -1,0 +1,4 @@
+{
+  "summary": "Extracts slugify into its own function and tests it (no seeded bugs).",
+  "bugs": []
+}

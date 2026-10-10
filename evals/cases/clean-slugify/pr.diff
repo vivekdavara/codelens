@@ -1,0 +1,34 @@
+diff --git a/tests/test_slug.py b/tests/test_slug.py
+new file mode 100644
+index 0000000..d226248
+--- /dev/null
++++ b/tests/test_slug.py
+@@ -0,0 +1,9 @@
++from text.slug import slugify, title_to_path
++
++
++def test_slugify_collapses_runs_and_trims():
++    assert slugify("  Hello, World!  ") == "hello-world"
++
++
++def test_title_to_path():
++    assert title_to_path("Release 2.0") == "/posts/release-2-0"
+diff --git a/text/slug.py b/text/slug.py
+index 816fd9d..43ba366 100644
+--- a/text/slug.py
++++ b/text/slug.py
+@@ -1,6 +1,12 @@
+ import re
+ 
++_NON_ALNUM = re.compile(r"[^a-z0-9]+")
++
++
++def slugify(text: str) -> str:
++    """Lowercase ASCII letters and digits, with runs of anything else as single hyphens."""
++    return _NON_ALNUM.sub("-", text.lower()).strip("-")
++
+ 
+ def title_to_path(title: str) -> str:
+-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+-    return f"/posts/{slug}"
++    return f"/posts/{slugify(title)}"

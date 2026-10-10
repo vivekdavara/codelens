@@ -1,0 +1,21 @@
+diff --git a/web/hooks.py b/web/hooks.py
+index cb0e34b..e7fca57 100644
+--- a/web/hooks.py
++++ b/web/hooks.py
+@@ -1,6 +1,13 @@
+ import json
++import os
+ 
+ 
+-def handle(body: bytes) -> dict:
+-    event = json.loads(body)
+-    return {"ok": True, "type": event.get("type")}
++def expected_token() -> str:
++    return os.environ["WEBHOOK_TOKEN"]
++
++
++def handle(body: bytes, token: str) -> dict:
++    if token == expected_token():
++        event = json.loads(body)
++        return {"ok": True, "type": event.get("type")}
++    return {"ok": False}

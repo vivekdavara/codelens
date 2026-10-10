@@ -1,0 +1,23 @@
+diff --git a/db/users.py b/db/users.py
+index 0bc6843..63f1235 100644
+--- a/db/users.py
++++ b/db/users.py
+@@ -1,3 +1,4 @@
++import hashlib
+ import sqlite3
+ 
+ 
+@@ -9,3 +10,13 @@ def connect(path: str) -> sqlite3.Connection:
+ 
+ def get_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
+     return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
++
++
++def find_by_email(conn: sqlite3.Connection, email: str) -> sqlite3.Row | None:
++    query = f"SELECT * FROM users WHERE email = '{email}'"
++    return conn.execute(query).fetchone()
++
++
++def check_password(row: sqlite3.Row, password: str) -> bool:
++    digest = hashlib.md5(password.encode()).hexdigest()
++    return digest == row["password_hash"]

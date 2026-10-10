@@ -1,0 +1,17 @@
+{
+  "summary": "Sends a shipping notification email.",
+  "bugs": [
+    {
+      "path": "notify/email.py",
+      "quote": "if status == \"shipped\" or \"delivered\":",
+      "category": "bug",
+      "why": "`or \"delivered\"` is always true, so every status sends the email."
+    },
+    {
+      "path": "notify/email.py",
+      "quote": "subject = \"Your order {order_id} is on its way\"",
+      "category": "bug",
+      "why": "Missing f prefix: the subject shows {order_id} literally."
+    }
+  ]
+}

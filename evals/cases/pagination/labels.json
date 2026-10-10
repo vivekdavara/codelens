@@ -1,0 +1,17 @@
+{
+  "summary": "Adds page-based listing to the orders API.",
+  "bugs": [
+    {
+      "path": "api/orders.py",
+      "quote": "return total // size",
+      "category": "bug",
+      "why": "Floor division drops the last, partial page (and 0 pages for fewer than `size` orders)."
+    },
+    {
+      "path": "api/orders.py",
+      "quote": "return ordered[start : start + size + 1]",
+      "category": "bug",
+      "why": "Each page returns size + 1 orders, repeating the last one on the next page."
+    }
+  ]
+}

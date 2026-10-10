@@ -1,0 +1,17 @@
+{
+  "summary": "Adds tax and currency parsing to invoices.",
+  "bugs": [
+    {
+      "path": "billing/invoice.py",
+      "quote": "return round(subtotal_cents(items) * TAX_RATE / 100) * 100",
+      "category": "bug",
+      "why": "Rounds the tax to whole dollars: up to 50 cents wrong on every invoice."
+    },
+    {
+      "path": "billing/invoice.py",
+      "quote": "except (ValueError or TypeError):",
+      "category": "bug",
+      "why": "`ValueError or TypeError` is just ValueError: a None input raises AttributeError, not caught."
+    }
+  ]
+}

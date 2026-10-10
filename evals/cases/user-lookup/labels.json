@@ -1,0 +1,17 @@
+{
+  "summary": "Adds lookup by email and password checks to the user store.",
+  "bugs": [
+    {
+      "path": "db/users.py",
+      "quote": "query = f\"SELECT * FROM users WHERE email = '{email}'\"",
+      "category": "security",
+      "why": "The email is formatted into the SQL: injection. Use a parameter."
+    },
+    {
+      "path": "db/users.py",
+      "quote": "digest = hashlib.md5(password.encode()).hexdigest()",
+      "category": "security",
+      "why": "Unsalted MD5 is not a password hash; use a slow KDF (scrypt, argon2)."
+    }
+  ]
+}

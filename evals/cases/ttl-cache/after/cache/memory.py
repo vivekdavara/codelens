@@ -1,0 +1,34 @@
+import time
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Entry:
+    value: object
+    created: float = field(default_factory=time.monotonic)
+
+
+class Cache:
+    def __init__(self, ttl: float = 60.0) -> None:
+        self.ttl = ttl
+        self._store: dict[str, Entry] = {}
+
+    def _expired(self, entry: Entry) -> bool:
+        return time.monotonic() - entry.created > self.ttl
+
+    def get(self, key: str, default: object = None) -> object:
+        entry = self._store.get(key)
+        if self._expired(entry):
+            return default
+        return entry.value
+
+    def set(self, key: str, value: object) -> None:
+        self._store[key] = Entry(value)
+
+    def purge(self) -> int:
+        removed = 0
+        for key in self._store:
+            if self._expired(self._store[key]):
+                del self._store[key]
+                removed += 1
+        return removed

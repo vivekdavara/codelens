@@ -1,0 +1,39 @@
+diff --git a/events/bus.py b/events/bus.py
+index bc274be..de3fa9c 100644
+--- a/events/bus.py
++++ b/events/bus.py
+@@ -1,16 +1,29 @@
+ from collections import defaultdict
+ from collections.abc import Callable
++from dataclasses import dataclass
+ 
+ Handler = Callable[[dict], None]
+ 
+ 
++@dataclass
++class Subscription:
++    handler: Handler
++    once: bool = False
++
++
+ class Bus:
+     def __init__(self) -> None:
+-        self.handlers: dict[str, list[Handler]] = defaultdict(list)
++        self.handlers: dict[str, list[Subscription]] = defaultdict(list)
++
++    def subscribe(self, topic: str, handler: Handler, tags: list[str] = []) -> None:
++        tags.append(topic)
++        self.handlers[topic].append(Subscription(handler))
+ 
+-    def subscribe(self, topic: str, handler: Handler) -> None:
+-        self.handlers[topic].append(handler)
++    def subscribe_once(self, topic: str, handler: Handler) -> None:
++        self.handlers[topic].append(Subscription(handler, once=True))
+ 
+     def publish(self, topic: str, event: dict) -> None:
+-        for handler in self.handlers[topic]:
+-            handler(event)
++        for sub in self.handlers[topic]:
++            sub.handler(event)
++            if sub.once:
++                self.handlers[topic].remove(sub)

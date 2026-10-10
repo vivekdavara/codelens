@@ -1,0 +1,17 @@
+{
+  "summary": "Adds thumbnail generation for uploaded files.",
+  "bugs": [
+    {
+      "path": "files/store.py",
+      "quote": "with open(os.path.join(UPLOAD_DIR, name), \"rb\") as fh:",
+      "category": "security",
+      "why": "A name like ../../etc/passwd escapes UPLOAD_DIR (path traversal)."
+    },
+    {
+      "path": "files/store.py",
+      "quote": "subprocess.run(f\"convert {source} -resize 128x128 {target}\", shell=True, check=True)",
+      "category": "security",
+      "why": "A file name with ; or $( ) in it runs commands through the shell."
+    }
+  ]
+}

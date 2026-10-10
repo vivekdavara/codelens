@@ -1,0 +1,17 @@
+{
+  "summary": "Adds one-shot subscriptions to the event bus.",
+  "bugs": [
+    {
+      "path": "events/bus.py",
+      "quote": "tags: list[str] = []",
+      "category": "bug",
+      "why": "The default list is shared by every call, and subscribe appends to it."
+    },
+    {
+      "path": "events/bus.py",
+      "quote": "self.handlers[topic].remove(sub)",
+      "category": "bug",
+      "why": "Removing from the list being iterated skips the next subscription."
+    }
+  ]
+}

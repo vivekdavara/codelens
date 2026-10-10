@@ -1,0 +1,20 @@
+{
+  "summary": "Adds expiry to the in-memory cache.",
+  "bugs": [
+    {
+      "path": "cache/memory.py",
+      "quote": "if self._expired(entry):",
+      "category": "bug",
+      "also": [
+        "entry = self._store.get(key)"
+      ],
+      "why": "A missing key gives entry None, and _expired(None) raises AttributeError."
+    },
+    {
+      "path": "cache/memory.py",
+      "quote": "del self._store[key]",
+      "category": "bug",
+      "why": "Deleting from the dict while iterating it raises RuntimeError."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "summary": "Moves the job runner to asyncio.",
+  "bugs": [
+    {
+      "path": "worker/jobs.py",
+      "quote": "time.sleep(self.retry_delay)",
+      "category": "performance",
+      "why": "time.sleep in a coroutine blocks the event loop; use await asyncio.sleep."
+    },
+    {
+      "path": "worker/jobs.py",
+      "quote": "        self.flush()",
+      "category": "bug",
+      "why": "flush is now a coroutine function: without await it never runs, so finished jobs are never saved."
+    }
+  ]
+}
