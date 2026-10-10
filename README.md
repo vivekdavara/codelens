@@ -240,7 +240,8 @@ fixing it. 26 problems were fixed, each with a regression test. The worst:
   instead of at its line, and two findings on one line shared one fingerprint (dedupe is now one per
   line).
 
-One known gap stays: CL003 can't tell whether `d.update({...})` adds a key, so it flags it either way.
+One known gap stays, narrowed: CL003 can't tell whether `d.update(...)` adds a key, so it flags every
+update except one whose only keys are the loop's own (`for k in d: d.update({k: ...})`), which can't.
 
 ### Earlier days
 

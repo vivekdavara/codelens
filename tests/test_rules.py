@@ -347,3 +347,31 @@ def test_a_method_rebound_at_class_level_is_not_a_coroutine() -> None:
         "    def go(self):\n        self.fetch()\n"
     )
     assert hits(source, "CL001") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "for k in d:\n    d.update({k: d[k] + 1})\n",
+        "for k in d.keys():\n    d.update({k: 0})\n",
+        "for k, v in d.items():\n    d.update({k: v * 2})\n",
+        "for x in s:\n    s.update({x})\n",
+    ],
+)
+def test_updating_only_the_current_key_is_safe(source: str) -> None:
+    assert hits(source, "CL003") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "for k in d:\n    d.update({other: 1})\n",
+        "for k in d:\n    d.update({k: 1, 'new': 2})\n",
+        "for k in d:\n    d.update({k: 1, **extra})\n",
+        "for k in d:\n    d.update(k=1)\n",  # a keyword is the string key "k", not the loop's k
+        "for v in d.values():\n    d.update({v: 1})\n",
+        "for i, x in enumerate(s):\n    s.update({x})\n",
+    ],
+)
+def test_updates_that_can_add_an_entry_still_count(source: str) -> None:
+    assert hits(source, "CL003") == [(2, "CL003")]

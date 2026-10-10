@@ -263,7 +263,28 @@ def _iterated(loop: ast.For | ast.AsyncFor) -> str | None:
     return _subject(it)
 
 
-def _mutates(stmt: ast.stmt, subject: str) -> str | None:
+def _loop_key(loop: ast.For | ast.AsyncFor) -> str | None:
+    """The name holding the current key: ``for k in d``, ``for k in d.keys()``, ``for k, v in d.items()``."""
+    it, target = loop.iter, loop.target
+    if isinstance(it, ast.Call):
+        if not isinstance(it.func, ast.Attribute) or it.func.attr not in ("keys", "items"):
+            return None  # .values(), enumerate(): the name holds something else
+        if it.func.attr == "items":
+            target = target.elts[0] if isinstance(target, ast.Tuple) and target.elts else target
+    return target.id if isinstance(target, ast.Name) else None
+
+
+def _rewrites_current(call: ast.Call, key: str | None) -> bool:
+    """``d.update({k: ...})`` (or ``s.update({k})``) with ``k`` the loop's own key: it can only overwrite the
+    entry being visited, never add one, so the iteration is safe."""
+    if key is None or call.keywords or len(call.args) != 1:
+        return False
+    arg = call.args[0]
+    keys = arg.keys if isinstance(arg, ast.Dict) else arg.elts if isinstance(arg, ast.Set) else []
+    return bool(keys) and all(isinstance(k, ast.Name) and k.id == key for k in keys)
+
+
+def _mutates(stmt: ast.stmt, subject: str, key: str | None = None) -> str | None:
     """How ``stmt`` (not counting nested functions and classes) changes ``subject``, or ``None``."""
     if isinstance(stmt, ast.Delete):
         for target in stmt.targets:
@@ -284,6 +305,7 @@ def _mutates(stmt: ast.stmt, subject: str) -> str | None:
             and len(node.args) in _MUTATORS[node.func.attr]
             and (not node.keywords or node.func.attr == "update")
             and _subject(node.func.value) == subject
+            and not (node.func.attr == "update" and _rewrites_current(node, key))
         ):
             return f"{subject}.{node.func.attr}()"
         stack.extend(ast.iter_child_nodes(node))
@@ -314,7 +336,9 @@ def _child_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
         yield case.body
 
 
-def _mutations(block: list[ast.stmt], subject: str, nested: bool = False) -> Iterator[tuple[ast.stmt, str]]:
+def _mutations(
+    block: list[ast.stmt], subject: str, nested: bool = False, key: str | None = None
+) -> Iterator[tuple[ast.stmt, str]]:
     """Statements in ``block`` that change ``subject``; ``nested`` once inside a loop within the loop, where
     a ``break`` leaves only that inner loop."""
     exits = (ast.Return, ast.Raise) if nested else (ast.Break, ast.Return, ast.Raise)
@@ -324,9 +348,9 @@ def _mutations(block: list[ast.stmt], subject: str, nested: bool = False) -> Ite
         if isinstance(stmt, _COMPOUND):
             inner_loop = nested or isinstance(stmt, ast.For | ast.AsyncFor | ast.While)
             for inner in _child_blocks(stmt):
-                yield from _mutations(inner, subject, inner_loop)
+                yield from _mutations(inner, subject, inner_loop, key)
             continue
-        how = _mutates(stmt, subject)
+        how = _mutates(stmt, subject, key)
         # Changing the collection and then leaving the loop at once is the safe idiom.
         leaves = any(isinstance(later, exits) for later in block[i + 1 :])
         if how is not None and not leaves:
@@ -337,7 +361,7 @@ def _loop_mutations(tree: ast.Module) -> list[Hit]:
     hits = []
     for loop in ast.walk(tree):
         if isinstance(loop, ast.For | ast.AsyncFor) and (subject := _iterated(loop)) is not None:
-            for stmt, how in _mutations(loop.body, subject):
+            for stmt, how in _mutations(loop.body, subject, key=_loop_key(loop)):
                 message = f"`{how}` changes `{subject}` while the loop is iterating over it"
                 hits.append(Hit(stmt.lineno, "CL003", message))
     return hits

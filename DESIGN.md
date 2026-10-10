@@ -355,7 +355,7 @@ from checked facts.
   |---|---|---|
   | CL001 | an `async def` of this module (or `self.`/`cls.` method of this class) called as a statement without `await` | rebound or shadowed names, decorated coroutines (a decorator can make them sync), calls passed somewhere |
   | CL002 | a statement after `return`/`raise`/`break`/`continue` in the same block | branches that each exit (it reads blocks, not control flow) |
-  | CL003 | a loop that changes the list, dict or set it iterates (`items.remove(x)`, `del d[k]`, `items += …`) | loops over a copy, change-then-`break`, other collections, deferred functions, calls whose arity no built-in method has |
+  | CL003 | a loop that changes the list, dict or set it iterates (`items.remove(x)`, `del d[k]`, `items += …`) | loops over a copy, change-then-`break` (not a `break` out of an inner loop), other collections, deferred functions, calls whose arity no built-in method has, an `update` of only the loop's own key |
   | CL004 | a plain string whose `{placeholders}` all name locals | f-strings, `.format`/`.format_map` receivers, keyword-filled templates (loguru), search tokens (`.replace("{x}", …)`, `in`), docstrings, module-level templates |
 
 - **Ruff is pinned** (`ruff==0.16.10` in the `static` extra, which the action installs): the static block
