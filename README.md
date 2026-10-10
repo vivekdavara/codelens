@@ -194,6 +194,10 @@ reviewed as if a PR had added it whole (`.venv/bin/python scripts/measure_static
 | test files (80,323 lines) | 1,179 | 14.68 |
 | other files (48,129 lines) | 151 | 3.14 |
 
+The pre-pass on those 296 files took 3.34 s (median of 3 runs, Apple M3; the script prints it): ruff is
+0.04 s of that, and CodeLens's own AST rules most of the rest. Sharing each function's bound names between
+two rules took the rules from 2.92 s to 2.30 s with identical hits on every file.
+
 F841 (unused local) is 1,012 of the hits, 873 of them in one file, `test_exceptions.py`, which assigns
 without reading on purpose; F821 is 127, 93 of them in `turtle.py`, which defines names with `exec`; 37 of
 the 61 rules never fired (numbers after the day's fixes; the first run had 1,331 hits). Most hits on shipped code are deliberate (the standard library calls `eval` and
@@ -242,7 +246,8 @@ One known gap stays: CL003 can't tell whether `d.update({...})` adds a key, so i
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 531 passing | `.venv/bin/pytest` |
+| Tests | 535 passing | `.venv/bin/pytest` |
+| Pre-pass property tests (day 3) | 120 seeded edits diffed by real git at `-U0`, `-U1` and `-U3`: `old_version` rebuilds every old file exactly (it found one end-of-file case, fixed); 2,000 seeded mutations of real code never crash the CodeLens rules; on random edits every static finding sits on a shown line and quotes it | `.venv/bin/pytest tests/test_old_version.py tests/test_static_fuzz.py` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 98% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Real history | every commit of this repository parses and renders: 48 commits, 122 file diffs, 0 failures at `8646d07` (another local clone, 50 Java/SQL/YAML commits: 0 failures) | `.venv/bin/python scripts/check_history.py [repo]` |

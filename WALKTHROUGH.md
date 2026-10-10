@@ -240,7 +240,7 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 531 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 535 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
@@ -264,7 +264,10 @@ so a PR adding `ruff.py` ran its own code with the job's API key in the environm
 reported no findings. Checking for the same pattern found it in the action since day 1 (`python -m pip`,
 `python -c 'import json'`); everything now runs ruff as a binary and Python with `-I`. Others: a deeply
 nested expression crashed the review (RecursionError), `# noqa` comments silenced rules, a file name could
-plant a fingerprint marker, and a lone `\r` shifted static findings by a line.
+plant a fingerprint marker, and a lone `\r` shifted static findings by a line. After that, two property
+tests found two more: `old_version` checked against real git on 120 random edits got the old file's final
+newline wrong when a PR changed it (`tests/test_old_version.py`), and fuzzing the rules with mutated code
+showed `ast.parse` printing the PR's SyntaxWarnings into CodeLens's output (`tests/test_static_fuzz.py`).
 
 ## What's not done yet
 
