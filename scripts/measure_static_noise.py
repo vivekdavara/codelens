@@ -20,6 +20,7 @@ import shutil
 import sys
 import sysconfig
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -74,7 +75,9 @@ def main() -> None:
             diffs.append(added_diff(relative, text))
             lines += text.count("\n") + (not text.endswith("\n"))
         patch = parse_patch("".join(diffs))
+        started = time.perf_counter()
         result = analyse(patch, root, ruff=find_ruff())
+        elapsed = time.perf_counter() - started
     hits = Counter(f.rule for f in result.findings)
     tests = {f.path for f in patch if budget_rank(f) == 1}  # test files, by the prompt budget's rule
     test_lines = sum(len(f.added_lines()) for f in patch if f.path in tests)
@@ -84,6 +87,7 @@ def main() -> None:
     print(f"corpus: {source}, {len(result.analysed)} files, {lines:,} lines, every line treated as added")
     print(f"static pre-pass: {result.tool or 'ruff not run'} + CodeLens rules ({len(RULES)} rules)")
     print(f"skipped: {len(result.skipped)}, not UTF-8 or unreadable: {unreadable}, notes: {result.notes}")
+    print(f"pre-pass time: {elapsed:.2f} s (new and old versions, ruff and CodeLens rules)")
     total = sum(hits.values())
     print(f"hits: {total:,} ({total / lines * 1000:.2f} per 1,000 lines)")
     for label, n, size in (

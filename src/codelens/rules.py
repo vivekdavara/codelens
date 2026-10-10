@@ -43,7 +43,9 @@ def check(source: str) -> list[Hit]:
         with warnings.catch_warnings():  # the PR's SyntaxWarnings ("invalid escape sequence") aren't ours
             warnings.simplefilter("ignore")
             tree = ast.parse(source.removeprefix("\ufeff"))  # a UTF-8 BOM is fine in a file, not in a str
-        hits = [*_unawaited(tree), *_unreachable(tree), *_loop_mutations(tree), *_missing_f_prefix(tree)]
+        bound = _BoundNames()
+        hits = [*_unawaited(tree, bound), *_unreachable(tree), *_loop_mutations(tree)]
+        hits += _missing_f_prefix(tree, bound)
     except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: source with null bytes
         return []
     return sorted(set(hits), key=lambda h: (h.line, h.code, h.message))
@@ -74,6 +76,20 @@ def _bound_names(node: ast.AST) -> set[str]:
         elif isinstance(sub, ast.MatchMapping) and sub.rest:
             names.add(sub.rest)  # case {"k": v, **rest}
     return names
+
+
+class _BoundNames:
+    """:func:`_bound_names` of each function, computed once per check: two rules ask for every function,
+    and each answer walks the function's whole subtree."""
+
+    def __init__(self) -> None:
+        self.cache: dict[int, set[str]] = {}
+
+    def __call__(self, node: ast.AST) -> set[str]:
+        key = id(node)  # the tree outlives the cache, so ids are not reused while it is in use
+        if key not in self.cache:
+            self.cache[key] = _bound_names(node)
+        return self.cache[key]
 
 
 # CL001 ------------------------------------------------------------------------------------------------------
@@ -109,8 +125,9 @@ def _module_coroutines(tree: ast.Module) -> set[str]:
 
 
 class _Unawaited(ast.NodeVisitor):
-    def __init__(self, module: set[str]) -> None:
+    def __init__(self, module: set[str], bound: _BoundNames) -> None:
         self.module = module
+        self.bound = bound
         self.methods: list[set[str]] = []  # async methods of each enclosing class, innermost last
         self.local: list[set[str]] = []  # names bound by each enclosing function
         self.hits: list[Hit] = []
@@ -132,7 +149,7 @@ class _Unawaited(ast.NodeVisitor):
         self.methods.pop()
 
     def _function(self, node: _Function) -> None:
-        self.local.append(_bound_names(node))
+        self.local.append(self.bound(node))
         self.generic_visit(node)
         self.local.pop()
 
@@ -167,8 +184,8 @@ class _Unawaited(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _unawaited(tree: ast.Module) -> list[Hit]:
-    visitor = _Unawaited(_module_coroutines(tree))
+def _unawaited(tree: ast.Module, bound: _BoundNames) -> list[Hit]:
+    visitor = _Unawaited(_module_coroutines(tree), bound)
     visitor.visit(tree)
     return visitor.hits
 
@@ -336,7 +353,8 @@ _PLACEHOLDER = re.compile(r"(?<!\{)\{([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*(?:![rsa])
 
 
 class _MissingF(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, bound: _BoundNames) -> None:
+        self.bound = bound
         self.local: list[set[str]] = []
         self.skip: set[int] = set()  # ids of strings that are fine as they are
         self.hits: list[Hit] = []
@@ -356,24 +374,26 @@ class _MissingF(ast.NodeVisitor):
 
     def _function(self, node: _Function) -> None:
         self._docstring(node)
-        self.local.append(_bound_names(node))
+        self.local.append(self.bound(node))
         # template = "{a}, {b}" ... template.format(a=a, b=b): a template filled in later, through its name.
-        formatted = {
-            call.func.value.id
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr in ("format", "format_map")
-            and isinstance(call.func.value, ast.Name)
-        }
-        for assign in ast.walk(node):
-            targets = assign.targets if isinstance(assign, ast.Assign) else []
-            if isinstance(assign, ast.AnnAssign | ast.AugAssign):
-                targets = [assign.target]
-            if any(isinstance(t, ast.Name) and t.id in formatted for t in targets):
-                value = getattr(assign, "value", None)
-                if isinstance(value, ast.Constant):
-                    self.skip.add(id(value))
+        # One walk finds both the formatted names and the assignments.
+        formatted: set[str] = set()
+        assigns: list[ast.Assign | ast.AnnAssign | ast.AugAssign] = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Assign | ast.AnnAssign | ast.AugAssign):
+                assigns.append(sub)
+            elif (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr in ("format", "format_map")
+                and isinstance(sub.func.value, ast.Name)
+            ):
+                formatted.add(sub.func.value.id)
+        for assign in assigns if formatted else ():
+            targets = assign.targets if isinstance(assign, ast.Assign) else [assign.target]
+            named = any(isinstance(t, ast.Name) and t.id in formatted for t in targets)
+            if named and isinstance(assign.value, ast.Constant):
+                self.skip.add(id(assign.value))
         self.generic_visit(node)
         self.local.pop()
 
@@ -428,7 +448,7 @@ class _MissingF(ast.NodeVisitor):
             self.hits.append(Hit(node.lineno, "CL004", message))
 
 
-def _missing_f_prefix(tree: ast.Module) -> list[Hit]:
-    visitor = _MissingF()
+def _missing_f_prefix(tree: ast.Module, bound: _BoundNames) -> list[Hit]:
+    visitor = _MissingF(bound)
     visitor.visit(tree)
     return visitor.hits
