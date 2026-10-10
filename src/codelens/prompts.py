@@ -21,6 +21,7 @@ __all__ = [
     "ReviewPrompt",
     "build_prompt",
     "system_prompt",
+    "unsafe_path",
 ]
 
 MAX_FINDINGS = 10
@@ -86,8 +87,9 @@ class ReviewPrompt:
 _LINE_BREAKS = str.maketrans(dict.fromkeys("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029", " "))
 
 
-def _unsafe(path: str | None) -> bool:
-    # A decoded git path can contain newlines, other control characters or Unicode line separators.
+def unsafe_path(path: str | None) -> bool:
+    """Whether a path can't be shown or used as is: a decoded git path can contain newlines, other control
+    characters or Unicode line separators."""
     return path is not None and any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in path)
 
 
@@ -134,7 +136,7 @@ def _skip_reason(file: FileDiff) -> str | None:
         return "deleted file"
     if not file.added_lines():
         return "no added lines"
-    if _unsafe(file.old_path) or _unsafe(file.new_path):
+    if unsafe_path(file.old_path) or unsafe_path(file.new_path):
         return "control characters in the path"
     return None
 

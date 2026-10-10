@@ -23,6 +23,7 @@ __all__ = [
     "Rejection",
     "Severity",
     "anchor_finding",
+    "anchored",
     "check_response",
     "parse_findings",
 ]
@@ -68,6 +69,8 @@ class Finding:
     occurrence: int = 0
     """Once anchored: how many lines above this one in the file's diff have the same text. With the path
     and the quote it identifies the line across runs, where its number would move (github.fingerprint)."""
+    rule: str = ""
+    """For a static finding, the rule that fired (``F841``, ``CL001``); empty for the model's."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +85,7 @@ class Finding:
             "quote": self.quote,
             "source": self.source,
             "occurrence": self.occurrence,
+            "rule": self.rule,
         }
 
 
@@ -279,6 +283,16 @@ def _occurrence(file: FileDiff, target: DiffLine, side: Side) -> int:
     )
 
 
+def anchored(finding: Finding, patch: PatchSet, index: int = -1) -> Finding | Rejection:
+    """``finding`` placed on its diff line, with ``quote`` set to the line's full text (a model may quote
+    part of it) and ``occurrence`` to the number of identical lines above it; or why it can't be placed."""
+    located = _locate(finding, patch, index)
+    if isinstance(located, Rejection):
+        return located
+    file, line = located
+    return replace(finding, quote=line.content, occurrence=_occurrence(file, line, finding.side))
+
+
 def check_response(text: str, patch: PatchSet) -> tuple[list[Finding], list[Rejection]]:
     """Validate and anchor every finding in a model response, in response order.
 
@@ -291,11 +305,9 @@ def check_response(text: str, patch: PatchSet) -> tuple[list[Finding], list[Reje
     rejections: list[Rejection] = []
     for index, item in enumerate(_items(text)):
         result = _validate(index, item)
-        located = _locate(result, patch, index) if isinstance(result, Finding) else result
-        if isinstance(located, Rejection):
-            rejections.append(located)
-            continue
-        assert isinstance(result, Finding)
-        file, line = located
-        findings.append(replace(result, quote=line.content, occurrence=_occurrence(file, line, result.side)))
+        placed = anchored(result, patch, index) if isinstance(result, Finding) else result
+        if isinstance(placed, Finding):
+            findings.append(placed)
+        else:
+            rejections.append(placed)
     return findings, rejections
