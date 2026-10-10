@@ -51,7 +51,9 @@ flowchart LR
 | Provider interface, recorded provider, Anthropic and OpenAI over HTTP | `codelens.providers` | 2 |
 | Review engine (one call, validate, anchor, rank, cap) | `codelens.review` | 2 |
 | Posting reviews (dry run by default in the CLI) | `codelens.github` | 2 |
-| Static pre-pass, dedupe, eval harness | `codelens.static`, `evals/` | 3 |
+| Static pre-pass: ruff (isolated) and CodeLens's rules | `codelens.static`, `codelens.rules` | 3 |
+| Dedupe across sources | `codelens.review.dedupe` | 3 |
+| Eval set and harness | `evals/`, `codelens.evals` | 3 |
 | Test generation and coverage delta | `codelens.testgen` | 4 |
 
 ## The diff parser (day 1)
@@ -322,17 +324,116 @@ and these line numbers would be pinned to the wrong commit. When there is nothin
 notice instead of failing: a live provider without `api-key` (a fork's PR gets no secrets), or the recorded
 provider without `recordings`. Inputs reach the shell through env only.
 
-## Static pre-pass, ranking and evals (day 3)
+## Static pre-pass (day 3)
 
-Ruff runs on the changed Python files; its findings inside `changed_ranges()` become `source: "static"` findings
-and are also shown to the model as grounding ("ruff already flagged line 18 as F841"). A few custom AST rules
-cover bug patterns ruff does not (decided on day 3). Findings are deduped by `(path, line, category)` with the
-higher-confidence one kept. Ranking (severity, then confidence) and the cap of 10 per review already exist
-from day 2 (`codelens.review.rank`).
+`codelens.static.analyse(patch, root)` checks the Python files a PR adds lines to, as they are in a checkout
+of the PR's new version, with ruff and four rules of CodeLens's own. Its findings are posted like the
+model's (`source: "static"`, with the rule code in `rule`) and listed in the prompt, so the model starts
+from checked facts.
 
-The eval set is a directory of small PRs, each a base snapshot, a diff with one or more seeded bugs, and the
-expected `(path, line, category)` labels. Precision and recall are computed against recorded responses, so the
-numbers are reproducible in CI.
+### What runs
+
+- **Ruff, isolated.** `ruff check --isolated --select <list> --target-version py314 --output-format json`
+  on the files, in chunks of 200 paths. `--isolated` ignores every config file: the PR's `pyproject.toml`
+  is the PR author's to edit, and must not switch rules off (a test commits a config that ignores F841 and
+  excludes `*.py`, and F841 is still reported). `py314` is the newest grammar ruff knows, so `match` and
+  `except*` are never "syntax errors" in a project that targets a newer Python than ruff's default.
+- **The selection** is 56 ruff rules (plus its syntax errors) chosen for bugs, not style, each with a hand-set severity, category,
+  confidence and a one-sentence consequence that becomes the comment body (`RULES` in `static.py`).
+  Families are never selected wholesale: B008 would flag every FastAPI `Depends()`, B905 every `zip`, S101
+  every `assert` in tests. A test asks ruff for its rule list and fails if a selected code doesn't exist or
+  is preview-only (preview rules change behaviour between releases).
+- **CodeLens's rules** (`codelens.rules`), for bugs ruff 0.16 doesn't report or reports only in preview:
+
+  | Rule | Fires on | Stays quiet on |
+  |---|---|---|
+  | CL001 | an `async def` of this module (or `self.`/`cls.` method of this class) called as a statement without `await` | rebound or shadowed names, decorated coroutines (a decorator can make them sync), calls passed somewhere |
+  | CL002 | a statement after `return`/`raise`/`break`/`continue` in the same block | branches that each exit (it reads blocks, not control flow) |
+  | CL003 | a loop that changes the list, dict or set it iterates (`items.remove(x)`, `del d[k]`, `items += …`) | loops over a copy, change-then-`break`, other collections, deferred functions, calls whose arity no built-in method has |
+  | CL004 | a plain string whose `{placeholders}` all name locals | f-strings, `.format`/`.format_map` receivers, keyword-filled templates (loguru), search tokens (`.replace("{x}", …)`, `in`), docstrings, module-level templates |
+
+- **Ruff is pinned** (`ruff==0.16.10` in the `static` extra, which the action installs): the static block
+  is part of the prompt, so a different ruff can change the prompt and with it every recording key. CI's
+  `action-static` job replays a recording made on macOS on a Linux runner, which only works if ruff reports
+  the same thing on both.
+
+### Which files, and which lines
+
+A file is checked only if every line the diff shows on its new side is the same on disk. A checkout of
+another commit (`actions/checkout` defaults to the PR's merge commit, which differs when the base branch
+changed the same file) would otherwise put findings on the wrong lines; such a file is skipped with the
+reason ("check out the PR's head commit"). Symlinks (in the diff or on disk), paths that escape the root,
+non-UTF-8 files and files over 2 MB are skipped too, each with its reason in the summary.
+
+Only problems the PR introduces are reported:
+
+1. every hit on an **added** line;
+2. a hit on an **unchanged line the diff shows** if the old version of the file didn't have it. Making
+   `run` an `async def` makes its unchanged `time.sleep()` block the event loop and its unchanged
+   `self.flush()` a coroutine that never runs. The first eval run found this: with added lines only, the
+   `async-jobs` case's two bugs were both invisible.
+
+The old version is rebuilt from the verified new file and the diff (`old_version`: each hunk's new side is
+swapped for its old side), so no base checkout or git history is needed; it is checked the same way in a
+temporary directory. A hit on a context line is "old" if the old version has a hit of the same rule on a
+line with the same text, counted per occurrence. Hits on lines the diff doesn't show can't carry a comment
+and are only counted (`outside`), as are old ones (`existing`). If the old versions can't be checked (ruff
+failed on them), only added lines count, as in rule 1.
+
+A missing ruff (the CLI without the `static` extra) or a failing one becomes a note in the summary, and the
+CodeLens rules still run. Nothing in the pre-pass fails the review.
+
+### Grounding the model
+
+Static findings on files shown to the model are listed after the diff:
+
+```text
+<static_analysis>
+Static analysis (ruff and CodeLens's own rules) already reported these on lines this pull request adds. They
+are checked and will be posted as they are: report one of these lines again only if you can explain a
+consequence its message misses.
+- shop/pricing.py:15 [F841] Local variable `discounted` is assigned to but never used
+</static_analysis>
+```
+
+Each item sits behind a `- ` margin and line breaks are shown as spaces, like the diff, so nothing in a
+message can start a line of its own; at most 50 are listed. With no static findings the prompt is byte for
+byte the day-2 prompt, so recordings of reviews without static findings stay valid.
+
+## Dedupe and ranking (day 3)
+
+Static and model findings go into one list (static first), and `dedupe` keeps one finding per
+`(path, line, side, category)`: the one `rank` puts first (severity, then confidence), the first one on a
+full tie. The plan said "keep the more confident one"; the day-2 cap test showed that would let a confident
+`low` replace a less confident `critical` on the same line. Two findings of different categories on one line
+are different problems and both stay. Then `rank` and the cap apply to the merged list, so static findings
+compete for the 10 slots like the model's. Static findings survive when no file fits the prompt (they don't
+depend on it) and the summary says "N findings from static analysis".
+
+## Evals (day 3)
+
+`evals/cases/` holds 14 small PRs (12 with 23 seeded bugs, 2 clean), each a `before/` and `after/` tree,
+the real `git diff -M` of the two (committed, so a git upgrade can't change the prompts), and labels that
+name each bug's line by quoting it. `evals/README.md` says how they were made.
+
+`codelens eval` reviews every case as `codelens review` would and scores three rows on what each would post
+(deduped, ranked, capped): the static pre-pass alone, the model alone, and the merged review. A finding
+matches a label if the path is the same, its line is one of the label's lines (the quoted one plus `also`
+lines a reviewer could fairly cite), and the category agrees; matching is one to one, so a second finding on
+a found bug counts against precision. Recall with any category is reported beside it.
+
+The model rows come from recordings in `evals/recordings/`, keyed by each case's prompt. A case without one
+is scored on the static pre-pass only and counted on stderr, never silently scored as zero. Recording uses
+one call per case: the model-alone row reuses the review's own answer. No recordings are committed yet:
+hand-written answers would say nothing about a model, and there was no API key to make real ones.
+
+Measured (`codelens eval`, see the README): the static pre-pass posts 14 findings on the 14 cases, all
+correct, and finds 14 of the 23 bugs. The cases and the rules were written by the same author on the same
+day, so that recall is an upper bound for these bug classes. `scripts/measure_static_noise.py` is the check
+on real code: it reviews 296 files of the Python 3.11.12 standard library as if each were added whole. Its
+first run found two false-positive classes in CodeLens's rules (fixed, with tests) and two real bugs in the
+standard library (CL004: `test/support/__init__.py` lines 923 and 2077 build error messages without the `f`
+prefix).
 
 ## Test generation (day 4)
 
