@@ -66,6 +66,10 @@ def _bound_names(node: ast.AST) -> set[str]:
             names.add((sub.asname or sub.name).split(".")[0])
         elif isinstance(sub, ast.Global | ast.Nonlocal):
             names.update(sub.names)
+        elif isinstance(sub, ast.ExceptHandler | ast.MatchAs | ast.MatchStar) and sub.name:
+            names.add(sub.name)  # except E as name; case [x, *rest]; case Point() as p
+        elif isinstance(sub, ast.MatchMapping) and sub.rest:
+            names.add(sub.rest)  # case {"k": v, **rest}
     return names
 
 
@@ -116,7 +120,11 @@ class _Unawaited(ast.NodeVisitor):
             for n in defs
             if isinstance(n, ast.AsyncFunctionDef) and all(_transparent(d) for d in n.decorator_list)
         }
-        self.methods.append(coroutines - sync)
+        # A class-level assignment can rebind a method: fetch = run_sync(fetch).
+        rebound = set().union(
+            *(_bound_names(n) for n in node.body if not isinstance(n, _Function | ast.ClassDef))
+        )
+        self.methods.append(coroutines - sync - rebound)
         self.generic_visit(node)
         self.methods.pop()
 
@@ -182,6 +190,8 @@ def _unreachable(tree: ast.Module) -> list[Hit]:
     for block in _blocks(tree):
         for stmt, after in pairwise(block):
             if isinstance(stmt, _EXITS):
+                if isinstance(after, ast.Expr) and isinstance(after.value, ast.Yield | ast.YieldFrom):
+                    break  # `return` then `yield`: the idiom for a generator that yields nothing
                 word = _EXIT_WORD[type(stmt)]
                 hits.append(Hit(after.lineno, "CL002", f"this line comes after a `{word}`, so it never runs"))
                 break
@@ -284,17 +294,21 @@ def _child_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
         yield case.body
 
 
-def _mutations(block: list[ast.stmt], subject: str) -> Iterator[tuple[ast.stmt, str]]:
+def _mutations(block: list[ast.stmt], subject: str, nested: bool = False) -> Iterator[tuple[ast.stmt, str]]:
+    """Statements in ``block`` that change ``subject``; ``nested`` once inside a loop within the loop, where
+    a ``break`` leaves only that inner loop."""
+    exits = (ast.Return, ast.Raise) if nested else (ast.Break, ast.Return, ast.Raise)
     for i, stmt in enumerate(block):
         if isinstance(stmt, _Function | ast.ClassDef):
             continue
         if isinstance(stmt, _COMPOUND):
+            inner_loop = nested or isinstance(stmt, ast.For | ast.AsyncFor | ast.While)
             for inner in _child_blocks(stmt):
-                yield from _mutations(inner, subject)
+                yield from _mutations(inner, subject, inner_loop)
             continue
         how = _mutates(stmt, subject)
         # Changing the collection and then leaving the loop at once is the safe idiom.
-        leaves = any(isinstance(later, ast.Break | ast.Return | ast.Raise) for later in block[i + 1 :])
+        leaves = any(isinstance(later, exits) for later in block[i + 1 :])
         if how is not None and not leaves:
             yield stmt, how
 
@@ -340,6 +354,23 @@ class _MissingF(ast.NodeVisitor):
     def _function(self, node: _Function) -> None:
         self._docstring(node)
         self.local.append(_bound_names(node))
+        # template = "{a}, {b}" ... template.format(a=a, b=b): a template filled in later, through its name.
+        formatted = {
+            call.func.value.id
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr in ("format", "format_map")
+            and isinstance(call.func.value, ast.Name)
+        }
+        for assign in ast.walk(node):
+            targets = assign.targets if isinstance(assign, ast.Assign) else []
+            if isinstance(assign, ast.AnnAssign | ast.AugAssign):
+                targets = [assign.target]
+            if any(isinstance(t, ast.Name) and t.id in formatted for t in targets):
+                value = getattr(assign, "value", None)
+                if isinstance(value, ast.Constant):
+                    self.skip.add(id(value))
         self.generic_visit(node)
         self.local.pop()
 

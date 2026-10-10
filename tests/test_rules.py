@@ -273,3 +273,65 @@ def test_every_hit_has_a_message_naming_what_it_saw() -> None:
     assert "`return`" in messages["CL002"]
     assert "`items.pop()`" in messages["CL003"]
     assert "`{n}`" in messages["CL004"]
+
+
+def test_a_break_out_of_an_inner_loop_does_not_leave_the_loop_that_changed() -> None:
+    source = """
+        def dedupe(items, banned):
+            for x in items:
+                for b in banned:
+                    if x == b:
+                        items.remove(x)
+                        break
+    """
+    assert hits(source, "CL003") == [(6, "CL003")]  # the outer loop goes on over a shorter list
+    returns = "for x in items:\n    for b in banned:\n        items.remove(x)\n        return x\n"
+    assert hits(returns, "CL003") == []  # a return leaves every loop
+
+
+def test_a_template_formatted_through_its_name_is_not_a_missing_f_prefix() -> None:
+    source = """
+        def greet(greeting, name):
+            template = "{greeting}, {name}!"
+            return template.format(greeting=greeting, name=name)
+
+        def code(filename, fd):
+            text: str = "open({filename!r}, {fd})"
+            text = text.format(filename=filename, fd=fd)
+            return text
+    """
+    assert hits(source, "CL004") == []
+
+
+def test_names_bound_by_except_and_match_are_locals() -> None:
+    raised = (
+        "def f(path):\n    try:\n        open(path)\n"
+        '    except OSError as exc:\n        raise RuntimeError("{exc}")\n'
+    )
+    assert hits(raised, "CL004") == [(5, "CL004")]  # exc is a local: the f is missing
+    shadowed = (
+        "async def cleanup():\n    pass\n\ndef f():\n    try:\n        pass\n"
+        "    except Exception as cleanup:\n        cleanup()\n"
+    )
+    assert hits(shadowed, "CL001") == []
+    captured = (
+        "async def handler():\n    pass\n\ndef f(event):\n    match event:\n"
+        "        case {'callback': handler}:\n            handler()\n"
+    )
+    assert hits(captured, "CL001") == []
+    rest = "def f(event):\n    match event:\n        case {**rest}:\n            return '{rest}'\n"
+    assert hits(rest, "CL004") == [(4, "CL004")]
+
+
+def test_return_then_yield_is_the_empty_generator_idiom() -> None:
+    assert hits("def nothing():\n    return\n    yield\n", "CL002") == []
+    assert hits("def nothing():\n    return\n    yield from ()\n", "CL002") == []
+    assert hits("def f():\n    return\n    log()\n", "CL002") == [(3, "CL002")]
+
+
+def test_a_method_rebound_at_class_level_is_not_a_coroutine() -> None:
+    source = (
+        "class A:\n    async def fetch(self):\n        pass\n\n    fetch = run_sync(fetch)\n\n"
+        "    def go(self):\n        self.fetch()\n"
+    )
+    assert hits(source, "CL001") == []
