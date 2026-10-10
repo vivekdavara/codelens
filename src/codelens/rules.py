@@ -376,6 +376,16 @@ class _MissingF(ast.NodeVisitor):
 
     visit_FunctionDef = visit_AsyncFunctionDef = _function
 
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # rest = "... {rest} ...": as an f-string it would read the name before this line gives it a value,
+        # so the braces are text (typically code held in a string).
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            names = {m.group(1) for m in _PLACEHOLDER.finditer(value.value)}
+            if any(isinstance(t, ast.Name) and t.id in names for t in node.targets):
+                self.skip.add(id(value))
+        self.generic_visit(node)
+
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         return  # an f-string's literal parts are Constant nodes too; they are not plain strings
 

@@ -241,6 +241,8 @@ def test_a_string_naming_local_variables_without_an_f_prefix() -> None:
         'def f(total):\n    return "{{total}}"\n',
         'def f():\n    return "{total}"\n',
         'TEMPLATE = "{total}"\n',
+        # A string assigned to a name it mentions: as an f-string it would read the name too early.
+        'def f(event):\n    rest = "case {**rest}: return {rest}"\n    return rest\n',
         # Docstrings explain placeholders.
         'def f(total):\n    """Formats {total} for display."""\n',
         # Not every placeholder is a local: probably filled in somewhere else.
