@@ -522,7 +522,17 @@ def old_version(file: FileDiff, new: list[str]) -> list[str]:
                 old.append(line.content)
             if line.kind is not LineKind.REMOVED:
                 i += 1
-    return old + new[i:]
+    tail = new[i:]
+    # The "\ No newline at end of file" markers say which side lacks the final newline; when only one does,
+    # the new file's ending is not the old one's.
+    lines = list(file.lines())
+    old_bare = any(d.no_newline_at_eof and d.kind is not LineKind.ADDED for d in lines)
+    new_bare = any(d.no_newline_at_eof and d.kind is not LineKind.REMOVED for d in lines)
+    if new_bare and not old_bare:
+        tail = [*tail, ""]
+    elif old_bare and not new_bare and tail[-1:] == [""]:
+        tail = tail[:-1]
+    return old + tail
 
 
 def _hits(
