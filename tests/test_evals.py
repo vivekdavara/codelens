@@ -221,8 +221,88 @@ def test_codelens_eval_records_one_answer_per_case(
             Live.calls += 1
             return Completion('{"findings": []}', "live-model")
 
-    monkeypatch.setattr("codelens.cli.make_provider", lambda *args, **kwargs: Live())
-    code, out, err = cli(capsys, "--record", "--recordings", str(tmp_path))
+    def make(name: str | None = None, **kwargs: Any) -> Any:
+        return RecordedProvider(kwargs["recordings"]) if name == "recorded" else Live()
+
+    monkeypatch.setattr("codelens.cli.make_provider", make)
+    code, out, err = cli(capsys, "--provider", "anthropic", "--record", "--recordings", str(tmp_path))
     assert code == 0 and Live.calls == 14 and len(list(tmp_path.glob("*.json"))) == 14
     assert "| model alone | 14 of 14 | 0 | 0 | — | 0 of 23 | 0.0% | 0.0% |" in out
-    assert "model answers from: live-model" in err
+    assert "model answers from: live-model" in err and "recorded 14 new answers" in err
+    # A second recording run (say, after one failed halfway) pays only for what is missing: nothing.
+    code, _, err = cli(capsys, "--provider", "anthropic", "--record", "--recordings", str(tmp_path))
+    assert code == 0 and Live.calls == 14 and "recorded 0 new answers" in err
+
+
+def test_eval_record_checks_the_recordings_path_before_any_call(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Request] = []
+
+    class Live:
+        name = "live"
+
+        def complete(self, request: Request) -> Completion:
+            calls.append(request)
+            return Completion('{"findings": []}', "live-model")
+
+    monkeypatch.setattr("codelens.cli.make_provider", lambda name=None, **kw: Live())
+    (tmp_path / "file").write_text("not a directory")
+    code, _, err = cli(
+        capsys, "--provider", "anthropic", "--record", "--recordings", str(tmp_path / "file" / "rec")
+    )
+    assert code == 1 and calls == [] and "cannot use" in err
+
+
+def test_an_unusable_live_answer_names_the_case_and_its_recording(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Rambling:
+        name = "live"
+
+        def complete(self, request: Request) -> Completion:
+            return Completion("Looks good to me!", "live-model")
+
+    def make(name: str | None = None, **kwargs: Any) -> Any:
+        return RecordedProvider(kwargs["recordings"]) if name == "recorded" else Rambling()
+
+    monkeypatch.setattr("codelens.cli.make_provider", make)
+    code, _, err = cli(capsys, "--provider", "anthropic", "--record", "--recordings", str(tmp_path))
+    assert code == 1 and "eval failed: async-jobs: response is not valid JSON" in err
+    (written,) = tmp_path.glob("*.json")
+    assert f"recorded the unusable answer in {written}: delete it to record again" in err
+
+
+def test_a_case_with_nothing_to_review_makes_no_call(tmp_path: Path) -> None:
+    # Only a deletion: a real review makes no model call, and neither may the eval (no recording needed).
+    case = tmp_path / "deletion"
+    (case / "before" / "legacy").mkdir(parents=True)
+    (case / "after").mkdir()
+    (case / "before" / "legacy" / "old.py").write_text("x = 1\n")
+    diff = "diff --git a/legacy/old.py b/legacy/old.py\ndeleted file mode 100644\n--- a/legacy/old.py\n"
+    (case / "pr.diff").write_text(diff + "+++ /dev/null\n@@ -1 +0,0 @@\n-x = 1\n")
+    (case / "labels.json").write_text('{"bugs": []}')
+    provider = Counting(RecordedProvider(tmp_path / "no-recordings"))
+    result = run_case(load_case(case), provider, ruff=RUFF)
+    assert provider.calls == 0 and result.model == [] and result.combined == []
+
+
+def test_the_pre_pass_notes_reach_the_report(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "codelens.cli.find_ruff", lambda: None
+    )  # ruff missing: the static row is not the real one
+    code, _, err = cli(capsys, "--static-only")
+    assert code == 0 and "async-jobs: static pre-pass: ruff is not installed" in err
+    result = run_case(load_case(CASES / "async-jobs"), None, ruff=None)
+    assert result.notes and Report([result]).to_dict()["cases"][0]["notes"] == result.notes
+
+
+def test_hand_written_answers_are_flagged_in_the_table(tmp_path: Path) -> None:
+    record(tmp_path, "pagination", [PAGE])
+    report = run([load_case(CASES / "pagination")], RecordedProvider(tmp_path), ruff=RUFF)
+    assert report.markdown().endswith(
+        "**Some model answers are hand-written test data, not model output.**\n"
+    )
+    assert "hand-written" not in run([load_case(CASES / "pagination")], None, ruff=RUFF).markdown()

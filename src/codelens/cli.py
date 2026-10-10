@@ -19,7 +19,7 @@ from typing import Any, TextIO
 
 from codelens import __version__
 from codelens.diff import DiffParseError, FileDiff, LineKind, PatchSet, Side, decode_diff, parse_patch
-from codelens.evals import EvalError, load_cases
+from codelens.evals import EvalError, ReplayOrRecord, load_cases
 from codelens.evals import run as run_evals
 from codelens.findings import FindingsFormatError, Severity
 from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, review_payload, summary_body
@@ -400,6 +400,7 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
 
 
 def run_eval(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    recorder: Recorder | None = None
     try:
         cases = load_cases(args.cases)
         provider: Provider | None = None
@@ -412,11 +413,26 @@ def run_eval(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 if provider.name == "recorded":
                     print("codelens: --record needs a live provider (--provider anthropic|openai)", file=err)
                     return 2
-                provider = Recorder(provider, args.recordings)
+                try:  # before the first paid call, so a bad path can't throw answers away
+                    args.recordings.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    print(f"codelens: cannot use {args.recordings} for recordings: {exc}", file=err)
+                    return 1
+                recorder = Recorder(provider, args.recordings)
+                # Cases recorded before (say, by a run that failed halfway) are replayed, not paid for again.
+                provider = ReplayOrRecord(make_provider("recorded", recordings=args.recordings), recorder)
         report = run_evals(cases, provider, ruff=find_ruff())
     except (EvalError, ProviderError, FindingsFormatError) as exc:
         print(f"codelens: eval failed: {exc}", file=err)
+        if recorder is not None and recorder.written and isinstance(exc.__cause__, FindingsFormatError):
+            # Recorded before it was checked: replaying it fails the same way until it is deleted.
+            print(
+                f"recorded the unusable answer in {recorder.written[-1]}: delete it to record again", file=err
+            )
         return 1
+    for result in report.results:
+        for note in result.notes:
+            print(f"{result.case.name}: static pre-pass: {note}", file=err)
     if args.json:
         json.dump(report.to_dict(), out, indent=2)
         out.write("\n")
@@ -431,6 +447,8 @@ def run_eval(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         )
     if report.models():
         print(f"model answers from: {', '.join(report.models())}", file=err)
+    if recorder is not None:
+        print(f"recorded {plural(len(recorder.written), 'new answer')} in {args.recordings}", file=err)
     return 0
 
 

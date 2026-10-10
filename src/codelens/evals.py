@@ -21,9 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from codelens.diff import PatchSet, Side, decode_diff, parse_patch
-from codelens.findings import Category, Finding, check_response
+from codelens.findings import Category, Finding, FindingsFormatError, check_response
 from codelens.prompts import MAX_FINDINGS, build_prompt
-from codelens.providers import Completion, Provider, RecordingMissing, Request
+from codelens.providers import Completion, Provider, ProviderError, RecordingMissing, Request
+from codelens.providers.recorded import HAND_WRITTEN
 from codelens.review import dedupe, rank, review
 from codelens.static import analyse
 
@@ -32,6 +33,7 @@ __all__ = [
     "CaseResult",
     "EvalError",
     "Label",
+    "ReplayOrRecord",
     "Report",
     "Score",
     "load_case",
@@ -214,6 +216,9 @@ class CaseResult:
     combined: list[Finding] | None = None
     """What the review posts: static and model findings merged, ranked and capped."""
     model_name: str = ""
+    notes: list[str] = field(default_factory=list)
+    """What the static pre-pass ran into or skipped: a note here means the static row is not what it
+    should be (ruff missing, say), so the report repeats them."""
 
     def findings(self, source: str) -> list[Finding] | None:
         return {"static": self.static, "model": self.model, "combined": self.combined}[source]
@@ -223,16 +228,22 @@ def run_case(case: Case, provider: Provider | None, *, ruff: list[str] | None) -
     """Review one case the way ``codelens review`` would, and keep each source's findings apart.
 
     A case without a recording (``RecordingMissing``) is scored on the static pre-pass only; any other
-    provider error is raised, since a broken provider would make every number wrong.
+    provider error is raised, since a broken provider would make every number wrong. A case with nothing
+    the model could be shown (only deletions, say) makes no call, as in a real review: the model's row is
+    then empty, not missing.
     """
     pre = analyse(case.patch, case.root, ruff=ruff)
-    result = CaseResult(case, posted(pre.findings))
+    notes = pre.notes + [f"skipped {path}: {reason}" for path, reason in pre.skipped]
+    result = CaseResult(case, posted(pre.findings), notes=notes)
     if provider is None:
         return result
     once = _Once(provider)
     try:
         merged = review(case.patch, once, static=pre)
     except RecordingMissing:
+        return result
+    if not once.answers:  # nothing to review: no call was made, and none must be made here
+        result.model, result.combined = [], merged.findings
         return result
     prompt = build_prompt(case.patch, static=pre.findings)
     completion = once.complete(prompt.request)  # the review's own answer, from the cache
@@ -292,6 +303,8 @@ class Report:
                 case_score, _ = score(findings, result.case.labels)
                 cells.append(f"{case_score.found} / {case_score.findings - case_score.correct}")
             lines.append(f"| `{result.case.name}` | {len(result.case.labels)} | {cells[0]} | {cells[1]} |")
+        if HAND_WRITTEN in self.models():
+            lines += ["", "**Some model answers are hand-written test data, not model output.**"]
         return "\n".join(lines) + "\n"
 
     def to_dict(self) -> dict[str, Any]:
@@ -321,6 +334,7 @@ class Report:
             "cases": [
                 {
                     "name": r.case.name,
+                    "notes": r.notes,
                     "labels": [
                         {"path": lb.path, "line": lb.line, "category": lb.category.value}
                         for lb in r.case.labels
@@ -332,5 +346,28 @@ class Report:
         }
 
 
+class ReplayOrRecord:
+    """Replays the recordings there are and asks ``live`` (a Recorder) for the rest, so re-running a
+    recording session after a failure pays only for the cases still missing."""
+
+    def __init__(self, recorded: Provider, live: Provider) -> None:
+        self.recorded, self.live = recorded, live
+        self.name = live.name
+
+    def complete(self, request: Request) -> Completion:
+        try:
+            return self.recorded.complete(request)
+        except RecordingMissing:
+            return self.live.complete(request)
+
+
 def run(cases: list[Case], provider: Provider | None, *, ruff: list[str] | None) -> Report:
-    return Report([run_case(case, provider, ruff=ruff) for case in cases])
+    """Every case's result; a provider failure or an unusable answer is an :class:`EvalError` naming the
+    case it happened on."""
+    results = []
+    for case in cases:
+        try:
+            results.append(run_case(case, provider, ruff=ruff))
+        except (ProviderError, FindingsFormatError) as exc:
+            raise EvalError(f"{case.name}: {exc}") from exc
+    return Report(results)
