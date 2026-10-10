@@ -179,6 +179,24 @@ def test_a_change_inside_a_match_case_or_a_handler() -> None:
     assert hits(source, "CL003") == [(5, "CL003"), (9, "CL003")]
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        "self.clear(cookie.domain, cookie.path, cookie.name)",  # CookieJar.clear, not list.clear
+        "items.append(x, y)",
+        "items.pop(1, 2, 3)",
+        "items.remove(x, key=1)",
+    ],
+)
+def test_calls_that_cannot_be_a_built_in_collection_method(call: str) -> None:
+    subject = call.split(".")[0]
+    assert hits(f"for x in {subject}:\n    {call}\n", "CL003") == []
+
+
+def test_dict_update_with_keywords_is_still_a_change() -> None:
+    assert hits("for k in d:\n    d.update(extra=1)\n", "CL003") == [(2, "CL003")]
+
+
 def test_deleting_from_another_collection_in_the_loop() -> None:
     assert hits("for k in d:\n    del other[k], d.attr\n", "CL003") == []
 
@@ -216,6 +234,9 @@ def test_a_string_naming_local_variables_without_an_f_prefix() -> None:
         'def f(total):\n    """Formats {total} for display."""\n',
         # Not every placeholder is a local: probably filled in somewhere else.
         'def f(total):\n    return "{total} {currency}"\n',
+        # A token searched for or replaced, not text: CodeLens's own prompts.py does this.
+        'def f(text, total):\n    return text.replace("{total}", str(total))\n',
+        'def f(text, total):\n    return "{total}" in text\n',
     ],
 )
 def test_strings_that_are_not_a_missing_f_prefix(source: str) -> None:

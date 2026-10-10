@@ -185,11 +185,22 @@ def _unreachable(tree: ast.Module) -> list[Hit]:
 
 # CL003 ------------------------------------------------------------------------------------------------------
 
-_MUTATORS = frozenset(
-    {"append", "extend", "insert", "remove", "pop", "clear"}  # list
-    | {"add", "discard", "update"}  # set (and dict.update)
-    | {"popitem", "setdefault"}  # dict
-)
+# The built-in list, set and dict methods that change the collection, with how many positional arguments
+# each accepts. A call outside that range is some other class's method (CookieJar.clear(domain, path,
+# name)), not a change to a built-in collection.
+_MUTATORS: dict[str, range] = {
+    "append": range(1, 2),
+    "extend": range(1, 2),
+    "insert": range(2, 3),
+    "remove": range(1, 2),
+    "pop": range(0, 3),  # list.pop([i]), dict.pop(k[, default])
+    "clear": range(0, 1),
+    "add": range(1, 2),
+    "discard": range(1, 2),
+    "update": range(0, 1000),  # dict.update(other, **kw), set.update(*others)
+    "popitem": range(0, 1),
+    "setdefault": range(1, 3),
+}
 _VIEWS = frozenset({"keys", "values", "items"})
 
 
@@ -235,6 +246,8 @@ def _mutates(stmt: ast.stmt, subject: str) -> str | None:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in _MUTATORS
+            and len(node.args) in _MUTATORS[node.func.attr]
+            and (not node.keywords or node.func.attr == "update")
             and _subject(node.func.value) == subject
         ):
             return f"{subject}.{node.func.attr}()"
@@ -293,6 +306,10 @@ def _loop_mutations(tree: ast.Module) -> list[Hit]:
 
 # CL004 ------------------------------------------------------------------------------------------------------
 
+_TOKEN_METHODS = frozenset(
+    {"replace", "split", "rsplit", "partition", "rpartition", "find", "rfind", "index", "rindex", "count"}
+    | {"startswith", "endswith", "removeprefix", "removesuffix", "strip", "lstrip", "rstrip"}
+)
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*(?:![rsa])?(?::[^{}]*)?\}(?!\})")
 
 
@@ -333,6 +350,9 @@ class _MissingF(ast.NodeVisitor):
             self.skip.add(id(receiver))
             if isinstance(receiver, ast.Call):
                 self.skip.update(id(arg) for arg in receiver.args)
+        # A string searched for or replaced is a token, not text to show: text.replace("{x}", value).
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _TOKEN_METHODS:
+            self.skip.update(id(arg) for arg in node.args)
         # So does a call given every placeholder as a keyword: loguru's logger.info("{x}", x=x).
         keywords = {kw.arg for kw in node.keywords if kw.arg is not None}
         for arg in node.args:
@@ -340,6 +360,12 @@ class _MissingF(ast.NodeVisitor):
                 names = {m.group(1) for m in _PLACEHOLDER.finditer(arg.value)}
                 if names and names <= keywords:
                     self.skip.add(id(arg))
+        self.generic_visit(node)
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        # if "{x}" in template: the string is a token here too.
+        if any(isinstance(op, ast.In | ast.NotIn) for op in node.ops):
+            self.skip.add(id(node.left))
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant) -> None:
