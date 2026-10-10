@@ -206,3 +206,23 @@ def test_the_ci_fixture_recording_matches_todays_prompt() -> None:
     result = run_case(case, RecordedProvider(recordings), ruff=RUFF)
     assert result.combined is not None
     assert [(f.line, f.source) for f in result.combined] == [(14, "llm"), (15, "static")]
+
+
+def test_codelens_eval_records_one_answer_per_case(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Live:
+        """Stands in for a live provider: a fixed empty answer, and a count of the calls."""
+
+        name = "live"
+        calls = 0
+
+        def complete(self, request: Request) -> Completion:
+            Live.calls += 1
+            return Completion('{"findings": []}', "live-model")
+
+    monkeypatch.setattr("codelens.cli.make_provider", lambda *args, **kwargs: Live())
+    code, out, err = cli(capsys, "--record", "--recordings", str(tmp_path))
+    assert code == 0 and Live.calls == 14 and len(list(tmp_path.glob("*.json"))) == 14
+    assert "| model alone | 14 of 14 | 0 | 0 | — | 0 of 23 | 0.0% | 0.0% |" in out
+    assert "model answers from: live-model" in err

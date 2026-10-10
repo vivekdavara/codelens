@@ -154,3 +154,20 @@ def test_the_summary_of_a_static_only_review() -> None:
 def test_a_long_list_of_unchecked_files_is_cut_short() -> None:
     body = summary_body(Review([], static=StaticResult(skipped=[("x.py", "symlink")] * 25)))
     assert "Not checked by static analysis: " in body and ", and 5 more." in body
+
+
+def test_review_json_without_the_pre_pass(capsys: pytest.CaptureFixture[str], checkout: Path) -> None:
+    patch = parse_patch(DIFF)
+    request = build_prompt(patch).request
+    recordings = checkout.parent / "rec"
+    write_recording(recordings, request, Completion('{"findings": []}', HAND_WRITTEN), "recorded")
+    args = [
+        "review",
+        str(checkout.parent / "pr.diff"),
+        "--recordings",
+        str(recordings),
+        "--no-static",
+        "--json",
+    ]
+    code, out, _ = run(capsys, *args)
+    assert code == 0 and json.loads(out)["static"] is None
