@@ -113,8 +113,9 @@ The rest of CodeLens asks the parser three questions:
   takes `path`, `line` and `side` (`RIGHT` = new file, `LEFT` = old file) and only accepts lines that appear in a
   hunk, context lines included. Findings that fail this check are dropped, not moved.
 - **What changed?** `FileDiff.added_lines()` and `FileDiff.changed_ranges()` give new-file line numbers of added
-  lines, collapsed into inclusive ranges. The static pre-pass keeps only ruff findings inside these ranges, and the
-  test generator (day 4) uses them to find changed functions.
+  lines, collapsed into inclusive ranges. The static pre-pass reports hits on added lines and, from the
+  context lines' old line numbers, new hits on unchanged ones (day 3, "Which files, and which lines"); the
+  test generator (day 4) will use the ranges to find changed functions.
 - **What does the model see?** Each hunk renders back to unified-diff text with new-file line numbers in the
   margin, so the model can cite lines without counting.
 
