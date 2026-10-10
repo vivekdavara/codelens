@@ -358,3 +358,21 @@ def test_old_version_rebuilds_the_file_before_the_change(tmp_path: Path) -> None
     (tmp_path / "added").mkdir()
     added = make_pr(tmp_path / "added", {}, {"t.py": after})
     assert static.old_version(added.files[0], after.split("\n")) == [""]
+
+
+def test_a_file_with_a_lone_carriage_return_is_skipped(tmp_path: Path) -> None:
+    # git sees one line where Python and ruff see two, so every later finding would land a line too late:
+    # here ruff reports `unused` on line 7, which in the diff is `return 3`.
+    after = "def f():\n    a = 1  # note\r    return 1\n\n\ndef g():\n    unused = 2\n    return 3\n"
+    make_pr(tmp_path, {}, {"other.py": "x = 1\n"})
+    (tmp_path / "m.py").write_bytes(after.encode())
+    git(tmp_path, "add", "m.py")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    raw = subprocess.run(
+        ["git", "diff", "--cached", "--", "m.py"], cwd=tmp_path, env=env, capture_output=True
+    )
+    result = run(parse_patch(decode_diff(raw.stdout)), tmp_path)  # bytes, as the CLI reads a diff
+    assert result.findings == [] and result.analysed == []
+    assert result.skipped == [
+        ("m.py", "a carriage return without a line feed (git and Python would number its lines differently)")
+    ]

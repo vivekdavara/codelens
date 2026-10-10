@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,7 @@ TARGET_VERSION = "py314"
 """The newest grammar ruff knows: version-gated syntax (``match``, ``except*``) is never reported as an
 error, since CodeLens can't know which Python the project targets."""
 _CHUNK = 200  # paths per ruff invocation, far below any command-line length limit
+_LONE_CR = re.compile(r"\r(?!\n)")
 
 B, S, P, M, T = Category.BUG, Category.SECURITY, Category.PERFORMANCE, Category.MAINTAINABILITY, Category.TEST
 CRIT, HIGH, MED, LOW = Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW
@@ -389,6 +391,10 @@ def _read(file: FileDiff, root: Path) -> list[str] | str:
         return "not UTF-8"
     except OSError as exc:
         return f"unreadable: {exc.strerror or exc}"
+    # git numbers lines by "\n" only; Python and ruff also end a line at a lone "\r", so after one their
+    # line numbers run ahead of the diff's and a finding would land on a later line than its problem.
+    if _LONE_CR.search(text):
+        return "a carriage return without a line feed (git and Python would number its lines differently)"
     lines = text.split("\n")
     if not _matches(file, lines):
         return f"the file in {root} is not the diff's new version (check out the PR's head commit)"
