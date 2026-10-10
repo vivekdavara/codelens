@@ -25,6 +25,8 @@ jobs:
         run: mypy
       - name: Test
         run: pytest --cov --cov-report=term-missing
+      - name: Eval set (static pre-pass)
+        run: codelens eval --static-only | tee -a "$GITHUB_STEP_SUMMARY"
 
   action:
     # Runs the composite action from this checkout on a fixture diff, so action.yml is tested on every push.
@@ -75,6 +77,41 @@ jobs:
         env:
           FINDINGS: ${{ steps.capped.outputs.findings }}
         run: test "$FINDINGS" = "1" || { echo "expected 1 finding under max-findings 1, got '$FINDINGS'"; exit 1; }
+
+  action-static:
+    # The static pre-pass through the action: an eval case reviewed from its after/ tree, with a
+    # hand-written answer keyed on the prompt that includes the static block (so ruff on Linux must
+    # produce exactly what it produces locally, or the recording misses and the job fails).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - id: codelens
+        uses: ./
+        with:
+          diff-file: evals/cases/discount-codes/pr.diff
+          source-root: evals/cases/discount-codes/after
+          recordings: tests/fixtures/eval-recordings
+      - name: Check outputs
+        env:
+          FINDINGS: ${{ steps.codelens.outputs.findings }}
+          STATIC: ${{ steps.codelens.outputs.static }}
+        run: |
+          test "$FINDINGS" = "2" || { echo "expected 2 findings, got '$FINDINGS'"; exit 1; }
+          test "$STATIC" = "1" || { echo "expected 1 static finding, got '$STATIC'"; exit 1; }
+      - id: off
+        uses: ./
+        with:
+          diff-file: evals/cases/discount-codes/pr.diff
+          source-root: evals/cases/discount-codes/after
+          recordings: tests/fixtures/eval-recordings
+          static: "false"
+        continue-on-error: true
+      - name: Check that turning the pre-pass off changes the prompt
+        env:
+          OUTCOME: ${{ steps.off.outcome }}
+        # No static block means a different prompt, which was never recorded: the review must fail loudly.
+        run: test "$OUTCOME" = "failure" || { echo "expected a recording miss, got '$OUTCOME'"; exit 1; }
 
   action-pr:
     # On pull requests, the action fetches the PR's own diff through the API.

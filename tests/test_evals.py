@@ -194,3 +194,15 @@ def test_codelens_eval_errors(
     assert code == 1 and "eval failed: no eval cases" in err
     code, _, err = cli(capsys, "--provider", "anthropic")
     assert code == 1 and "eval failed:" in err and "ANTHROPIC_API_KEY" in err
+
+
+def test_the_ci_fixture_recording_matches_todays_prompt() -> None:
+    # CI's action-static job replays this; regenerate it with scripts/hand_record.py (see the CI comment).
+    case = load_case(CASES / "discount-codes")
+    pre = analyse(case.patch, case.root, ruff=RUFF)
+    key = build_prompt(case.patch, static=pre.findings).request.key()
+    recordings = Path(__file__).parent / "fixtures" / "eval-recordings"
+    assert [p.name for p in recordings.iterdir()] == [f"{key}.json"]
+    result = run_case(case, RecordedProvider(recordings), ruff=RUFF)
+    assert result.combined is not None
+    assert [(f.line, f.source) for f in result.combined] == [(14, "llm"), (15, "static")]

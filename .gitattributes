@@ -1,2 +1,4 @@
 # Diff fixtures are byte-exact git output (trailing tabs, no EOL conversion).
 tests/fixtures/*.diff -text
+# Eval cases are byte-exact too: their diffs are recording keys, and their trees must match the diffs.
+evals/cases/** -text

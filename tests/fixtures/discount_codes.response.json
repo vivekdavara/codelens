@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "path": "shop/pricing.py",
+      "line": 14,
+      "quote": "        rate = DISCOUNTS[code]",
+      "severity": "high",
+      "category": "bug",
+      "title": "An unknown discount code raises KeyError",
+      "body": "`DISCOUNTS[code]` raises `KeyError` for any code that is not in the table, so a mistyped code becomes a server error. Look the code up with `DISCOUNTS.get(code)` and reject unknown codes explicitly.",
+      "confidence": 0.85
+    }
+  ]
+}
