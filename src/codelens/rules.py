@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import pairwise
@@ -39,7 +40,9 @@ def check(source: str) -> list[Hit]:
     file simply gets no hits from these rules.
     """
     try:
-        tree = ast.parse(source.removeprefix("\ufeff"))  # a UTF-8 BOM is fine in a file, not in a str
+        with warnings.catch_warnings():  # the PR's SyntaxWarnings ("invalid escape sequence") aren't ours
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source.removeprefix("\ufeff"))  # a UTF-8 BOM is fine in a file, not in a str
         hits = [*_unawaited(tree), *_unreachable(tree), *_loop_mutations(tree), *_missing_f_prefix(tree)]
     except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: source with null bytes
         return []

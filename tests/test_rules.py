@@ -21,6 +21,16 @@ def test_code_too_deep_to_walk_has_no_hits_instead_of_crashing(depth: int) -> No
     assert check("def f(a):\n    return " + " + ".join(["a"] * depth) + "\n") == []
 
 
+def test_the_prs_syntax_warnings_are_not_printed(capsys: pytest.CaptureFixture[str]) -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # a warning escaping check() would fail the test
+        assert check('def f():\n    return "\\d" + 1_000x\n') == []
+        assert check('def f(items):\n    s = "\\d"\n    for x in items:\n        items.remove(x)\n')
+    assert capsys.readouterr().err == ""
+
+
 def test_a_byte_order_mark_does_not_hide_a_file() -> None:
     assert [h.code for h in check("\ufeffdef f(items):\n    for x in items:\n        items.remove(x)\n")] == [
         "CL003"
