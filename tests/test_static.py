@@ -242,13 +242,26 @@ def test_the_rule_table_is_well_formed() -> None:
     assert {"CL001", "CL002", "CL003", "CL004"} <= RULES.keys()
 
 
-def test_find_ruff_prefers_the_installed_package_then_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert find_ruff() == [sys.executable, "-m", "ruff"]
-    monkeypatch.setattr(static.importlib.util, "find_spec", lambda name: None)
+def test_find_ruff_prefers_the_installed_binary_then_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ruff
+
+    assert find_ruff() == [os.fsdecode(ruff.find_ruff_bin())]
+    monkeypatch.setitem(sys.modules, "ruff", None)  # not installed: the import fails
     monkeypatch.setattr(static.shutil, "which", lambda name: "/usr/local/bin/ruff")
     assert find_ruff() == ["/usr/local/bin/ruff"]
     monkeypatch.setattr(static.shutil, "which", lambda name: None)
     assert find_ruff() is None
+
+
+def test_a_ruff_py_in_the_checkout_never_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The checkout is the PR's: with `python -m ruff` in it, this file ran instead of ruff (and saw the
+    # job's environment) and the pre-pass reported nothing.
+    planted = "import pathlib\npathlib.Path(__file__).with_name('RAN').write_text('ran')\nprint('[]')\n"
+    patch = make_pr(tmp_path, {}, {"m.py": "def f():\n    unused = 2\n", "ruff.py": planted})
+    monkeypatch.chdir(tmp_path)  # the action runs in the checkout, too
+    result = run(patch, tmp_path, ruff=find_ruff())
+    assert not (tmp_path / "RAN").exists()
+    assert [(f.path, f.rule) for f in result.findings] == [("m.py", "F841")]
 
 
 def test_diagnostics_that_are_not_ours_are_ignored(tmp_path: Path) -> None:

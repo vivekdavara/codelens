@@ -27,3 +27,15 @@ def test_no_expression_is_interpolated_into_a_script() -> None:
     scripts = run_scripts(ACTION.read_text())
     assert len(scripts) > 50  # the parser really found the scripts
     assert [(n, line.strip()) for n, line in scripts if "${{" in line] == []
+
+
+def test_every_python_in_the_action_runs_isolated() -> None:
+    # Steps run in the workspace, the PR's checkout; `python -m pip` or `python -c 'import json'` there
+    # would import a planted pip.py or json.py. -I keeps the current directory off sys.path.
+    text = ACTION.read_text()
+    commands = [line for _, line in run_scripts(text)]
+    commands += [line.split("run:", 1)[1] for line in text.splitlines() if re.match(r"\s*run: (?!\|)", line)]
+    calls = [c for c in commands if not c.strip().startswith("#") and re.search(r"\bpython3?\b", c)]
+    assert len(calls) == 3  # pip install, and the two JSON one-liners
+    for call in calls:
+        assert re.search(r"\bpython3?\s+-I\s", call), call.strip()

@@ -14,12 +14,11 @@ edit, and must not decide what CodeLens checks. See DESIGN.md, "Static pre-pass"
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from collections import Counter
 from collections.abc import Sequence
@@ -344,15 +343,20 @@ class StaticResult:
 
 
 def find_ruff() -> list[str] | None:
-    """The ruff installed next to CodeLens (``python -m ruff``), else one on ``PATH``, else ``None``.
+    """The ruff binary installed next to CodeLens, else one on ``PATH``, else ``None``.
 
     The first is the version ``codelens[static]`` pins, which matters: the prompt lists its findings, so a
-    different ruff can change the prompt and with it every recording key.
+    different ruff can change the prompt and with it every recording key. It is run as a binary, never as
+    ``python -m ruff``: ``-m`` puts the current directory first on ``sys.path``, and the pre-pass runs in the
+    PR's checkout, where a ``ruff.py`` would then run instead (with the job's secrets in its environment).
     """
-    if importlib.util.find_spec("ruff") is not None:
-        return [sys.executable, "-m", "ruff"]
-    found = shutil.which("ruff")
-    return [found] if found else None
+    try:
+        from ruff import find_ruff_bin  # type: ignore[import-untyped]
+
+        return [os.fsdecode(find_ruff_bin())]
+    except (ImportError, FileNotFoundError):
+        found = shutil.which("ruff")
+        return [found] if found else None
 
 
 def _skip_reason(file: FileDiff, root: Path) -> str | None:
