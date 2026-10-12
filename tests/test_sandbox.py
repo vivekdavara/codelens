@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from codelens.sandbox import MAX_OUTPUT, Outcome, _parse, run_pytest, scrubbed_env
 
@@ -22,6 +26,7 @@ IMPORT = "from school.grades import grade\n\n"
 
 
 def project(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     src = tmp_path / "proj" / "src" / "school"
     src.mkdir(parents=True)
     (src / "__init__.py").write_text("")
@@ -173,3 +178,113 @@ def test_a_malformed_report_is_an_error() -> None:
     parsed = _parse({"exit": 0, "files": files}, "", 0)
     assert parsed.statements == {"a.py": {1, 2}} and parsed.executed == {"a.py": {1}}
     assert _parse({"exit": 1, "files": []}, "", 0).statements == {}
+
+
+@pytest.mark.parametrize(
+    ("test", "counts"),
+    [
+        (
+            "import pytest\n\n@pytest.mark.xfail\ndef test_a():\n    assert grade(100) == 'B'\n",
+            {"xfailed": 1},
+        ),
+        ("import pytest\n\ndef test_a():\n    grade(85)\n    pytest.skip('later')\n", {"skipped": 1}),
+        ("import pytest\n\ndef test_a():\n    pytest.exit('bye', returncode=0)\n", {}),
+        (
+            "import pytest\n\n@pytest.mark.xfail\ndef test_a():\n    pass\n\ndef test_b():\n    pass\n",
+            {"passed": 1, "xpassed": 1},
+        ),
+        (
+            "import pytest\n\n@pytest.fixture\ndef broken():\n    raise RuntimeError\n\n"
+            "def test_a(broken):\n    pass\n",
+            {"errors": 1},
+        ),
+    ],
+)
+def test_exit_status_zero_is_not_a_pass_unless_a_test_passed_cleanly(
+    tmp_path: Path, test: str, counts: dict[str, int]
+) -> None:
+    result, _ = run(tmp_path, IMPORT + test)
+    assert result.outcome is Outcome.FAILED
+    assert {k: v for k, v in result.counts.items() if v} == counts
+
+
+def test_counts_of_a_clean_pass(tmp_path: Path) -> None:
+    result, _ = run(
+        tmp_path, f"{IMPORT}def test_a():\n    assert grade(95) == 'A'\n\ndef test_b():\n    pass\n"
+    )
+    assert result.outcome is Outcome.PASSED and result.counts["passed"] == 2
+
+
+def test_a_thread_left_running_does_not_turn_a_pass_into_a_timeout(tmp_path: Path) -> None:
+    test = "import threading, time\n\ndef test_a():\n"
+    test += "    threading.Thread(target=time.sleep, args=(60,)).start()\n"
+    result, _ = run(tmp_path, test, timeout=10)
+    assert result.outcome is Outcome.PASSED and result.seconds < 10
+
+
+def test_a_conftest_beside_the_tests_does_not_apply(tmp_path: Path) -> None:
+    # A candidate could write one beside itself for the next; scratch runs copy the tests away and
+    # load no conftest at all.
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n\n@pytest.hookimpl(hookwrapper=True)\ndef pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n    outcome.get_result().outcome = 'passed'\n"
+    )
+    result, _ = run(tmp_path, "def test_a():\n    assert False\n")
+    assert result.outcome is Outcome.FAILED
+
+
+def test_two_tests_with_one_name_are_refused(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    for d in ("a", "b"):
+        (tmp_path / d / "test_x.py").write_text("def test_a():\n    pass\n")
+    with pytest.raises(ValueError, match=r"two tests named test_x\.py"):
+        run_pytest([tmp_path / "a" / "test_x.py", tmp_path / "b" / "test_x.py"], include=[])
+
+
+def test_the_child_runs_in_utf8_mode_and_writes_no_bytecode(tmp_path: Path) -> None:
+    test = f"import sys\n{IMPORT}def test_a():\n"
+    test += "    assert sys.flags.utf8_mode == 1 and sys.dont_write_bytecode\n"
+    result, _ = run(tmp_path, test, env={"PATH": os.environ["PATH"], "LANG": "en_US.ISO8859-1"})
+    assert result.outcome is Outcome.PASSED, result.output
+    assert not list((tmp_path / "proj").rglob("__pycache__"))
+
+
+def test_a_relative_interpreter_path_works_and_a_missing_one_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    venv = Path(sys.executable).parent.parent
+    monkeypatch.chdir(venv.parent)
+    result, _ = run(
+        tmp_path, "def test_a():\n    pass\n", python=str(Path(venv.name) / "bin" / Path(sys.executable).name)
+    )
+    assert result.outcome is Outcome.PASSED, result.output
+    missing, _ = run(tmp_path / "again", "def test_a():\n    pass\n", python="/no/such/python")
+    assert missing.outcome is Outcome.ERROR and "could not start /no/such/python" in missing.output
+
+
+def test_an_interrupt_kills_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pidfile = tmp_path / "pid"
+    test = f"import os, time\n\ndef test_a():\n    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+    test += "    time.sleep(60)\n"
+    real_wait = subprocess.Popen.wait
+
+    def interrupted(self: subprocess.Popen[bytes], timeout: float | None = None) -> int:
+        if timeout is None:
+            return real_wait(self)
+        deadline = time.monotonic() + 10
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run(tmp_path, test)
+    pid = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # killed and reaped: run_pytest waited for it after the kill
+
+
+def test_a_checkout_path_with_glob_characters_is_measured(tmp_path: Path) -> None:
+    result, module = run(tmp_path / "repo[1]", f"{IMPORT}def test_a():\n    assert grade(95) == 'A'\n")
+    assert result.outcome is Outcome.PASSED and result.executed[module] == {1, 2, 3}

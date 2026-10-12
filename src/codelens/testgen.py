@@ -456,7 +456,7 @@ def generate(
             [root / t for t in tests],
             include=include,
             path=path,
-            cwd=root,
+            project=root,
             python=python,
             timeout=suite_timeout,
             plugins=True,
