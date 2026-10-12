@@ -35,3 +35,25 @@ def test_the_review_example_is_what_the_command_prints(
     assert main(command.split()[1:]) == 0
     captured = capsys.readouterr()
     assert captured.out.splitlines() + captured.err.splitlines() == shown
+
+
+def test_the_testgen_example_is_what_the_command_prints(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = (ROOT / "README.md").read_text()
+    rest = text[text.index("Output on the sample in this repo") :]
+    block = re.search(r"```text\n(.*?)```", rest, re.DOTALL)
+    command = re.search(r"`(\.venv/bin/codelens testgen [^`]+)`", text)
+    assert block and command
+    # The README's own command, from its results table, with a shorter timeout: only the candidate that
+    # sleeps waits for it, and it prints "timed out" either way.
+    args = command.group(1).split()[1:]
+    assert args[-2:] == ["--timeout", "5"]
+    monkeypatch.chdir(ROOT)
+    monkeypatch.delenv("CODELENS_PROVIDER", raising=False)
+    assert main([*args[:-1], "2"]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    # The README elides the middle of the candidate list with "...".
+    head, tail = block.group(1).split("...\n")
+    assert printed[: len(head.splitlines())] == head.splitlines()
+    assert printed[-len(tail.splitlines()) :] == tail.splitlines()
