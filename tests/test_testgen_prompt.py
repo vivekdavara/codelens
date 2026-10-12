@@ -143,3 +143,10 @@ def test_an_answer_that_is_not_a_tests_object_is_an_error(tmp_path: Path, text: 
 def test_deep_nesting_is_an_error_not_a_crash() -> None:
     with pytest.raises(FindingsFormatError, match="nested too deeply to be tests"):
         parse_candidates("[" * 100_000 + "]" * 100_000, [])
+
+
+def test_code_nested_too_deeply_is_rejected_not_a_crash(tmp_path: Path) -> None:
+    shown = build_prompt(targets(tmp_path)).targets
+    deep = "x = " + "-" * 10_000 + "1\n\n\ndef test_a():\n    pass\n"
+    _, rejections = parse_candidates(answer({"function": "shop.sku.parse", "code": deep}), shown)
+    assert [(r.kind, r.detail) for r in rejections] == [("not-python", "the code nested too deeply to parse")]

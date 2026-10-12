@@ -159,3 +159,16 @@ def test_rejected_items_never_run(tmp_path: Path) -> None:
 def test_a_file_no_run_could_measure_is_reported_as_unmeasured(tmp_path: Path) -> None:
     result = generate(project(tmp_path), tmp_path, Scripted(HANGS), timeout=1)
     assert result.coverage == [] and [t.name for t in result.unmeasured] == ["grade", "curve"]
+
+
+def test_no_module_inside_the_budget_means_no_call(tmp_path: Path) -> None:
+    class Refuses:
+        name = "refuses"
+
+        def complete(self, request: Request) -> Completion:
+            raise AssertionError("no call should be made")
+
+    result = generate(project(tmp_path), tmp_path, Refuses(), max_prompt_chars=10)
+    assert result.targets == [] and result.skipped == [
+        ("school/grades.py", "over the 10-character prompt budget")
+    ]

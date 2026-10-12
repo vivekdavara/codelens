@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from test_static import git
-from test_testgen_generate import AGAIN, B_AND_C, CAPPED, IMPORTS, WRONG, project
+from conftest import FakeServer, Reply
+from test_cli_review import (
+    claude_says,
+    clean_env,  # noqa: F401 - an autouse fixture: importing it applies it here
+)
+from test_static import git, make_pr
+from test_testgen_generate import AFTER, AGAIN, B_AND_C, BEFORE, CAPPED, HANGS, IMPORTS, SUITE, WRONG, project
 
 from codelens.cli import main
 from codelens.diff import decode_diff, parse_patch
@@ -129,3 +134,146 @@ def test_the_timeout_must_be_a_positive_number(value: str) -> None:
     with pytest.raises(SystemExit) as exit_info:
         main(["testgen", "x.diff", "--timeout", value])
     assert exit_info.value.code == 2
+
+
+def custom(
+    tmp_path: Path, extra: dict[str, str], *tests: tuple[str, str], max_tests: int = 10
+) -> tuple[Path, Path, Path]:
+    """Like ``setup``, with ``extra`` files in the PR and the cap the run will use."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    make_pr(
+        root,
+        {"school/grades.py": BEFORE, "tests/test_grades.py": SUITE},
+        {"school/grades.py": AFTER, **extra},
+    )
+    diff = tmp_path / "pr.diff"
+    diff.write_bytes(git(root, "diff", "--cached", "-M").encode())
+    found = find_targets(parse_patch(decode_diff(diff.read_bytes())), root)
+    request = build_prompt(found, max_tests=max_tests).request
+    text = json.dumps({"tests": [{"function": f, "code": IMPORTS + c} for f, c in tests]})
+    recordings = tmp_path / "recordings"
+    write_recording(recordings, request, Completion(text, HAND_WRITTEN), "recorded")
+    return root, diff, recordings
+
+
+def test_the_report_names_rejections_the_cap_and_skipped_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    extra = {"scripts/build-docs.py": "def main():\n    pass\n"}
+    root, diff, recordings = custom(
+        tmp_path, extra, ("school.grades.nope", "def test_x():\n    pass\n"), B_AND_C, AGAIN, max_tests=1
+    )
+    args = [
+        "testgen",
+        str(diff),
+        "--source-root",
+        str(root),
+        "--recordings",
+        str(recordings),
+        "--max-tests",
+        "1",
+    ]
+    assert main(args) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "rejected [0] unknown-function: 'school.grades.nope' is not a changed function shown" in out
+    assert "over the cap: 1 candidate not run" in out
+    assert out[-1] == "not tested: scripts/build-docs.py (not importable as a module)"
+
+
+def test_a_function_no_run_measured_is_named(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, diff, recordings = setup(tmp_path, HANGS)
+    args = [
+        "testgen",
+        str(diff),
+        "--source-root",
+        str(root),
+        "--recordings",
+        str(recordings),
+        "--timeout",
+        "1",
+    ]
+    assert main(args) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "dropped [0] school.grades.curve: timed out"
+    assert out[-2:] == [
+        "not measured: school.grades.grade (no run reported its file)",
+        "not measured: school.grades.curve (no run reported its file)",
+    ]
+
+
+def test_an_unreadable_diff_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["testgen", str(tmp_path / "missing.diff")]) == 1
+    assert "codelens: " in capsys.readouterr().err
+
+
+def test_record_saves_the_live_answer_and_replays_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+) -> None:
+    root, diff, _ = setup(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    answer = json.dumps({"tests": [{"function": "school.grades.curve", "code": IMPORTS + CAPPED[1]}]})
+    fake_server.reply(Reply(200, claude_says(answer)))
+    recs = tmp_path / "live"
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(recs)]
+    assert main([*args, "--provider", "anthropic", "--record"]) == 0
+    captured = capsys.readouterr()
+    (recorded,) = recs.iterdir()
+    assert f"recorded {recorded}" in captured.err
+    assert "tests from anthropic: claude-opus-5-5, 700 input / 90 output tokens" in captured.out
+    assert main(args) == 0  # replayed: the server is not asked again
+    assert capsys.readouterr().out.splitlines()[0].startswith("kept    [0] school.grades.curve")
+    assert len(fake_server.requests) == 1
+
+
+def test_an_unusable_live_answer_is_kept_and_named(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+) -> None:
+    root, diff, _ = setup(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    fake_server.reply(Reply(200, claude_says("I'd rather not.")))
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(tmp_path / "live")]
+    assert main([*args, "--provider", "anthropic", "--record"]) == 1
+    assert "recorded the unusable answer in" in capsys.readouterr().err
+
+
+def test_record_into_an_unusable_directory_fails_before_the_call(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+) -> None:
+    root, diff, _ = setup(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("CODELENS_BASE_URL", fake_server.url)
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(blocker / "recs")]
+    assert main([*args, "--provider", "anthropic", "--record"]) == 1
+    assert "cannot use" in capsys.readouterr().err and fake_server.requests == []
+
+
+def test_out_that_cannot_be_written_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, diff, recordings = setup(tmp_path, CAPPED)
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    args = [
+        "testgen",
+        str(diff),
+        "--source-root",
+        str(root),
+        "--recordings",
+        str(recordings),
+        "--out",
+        str(blocker),
+    ]
+    assert main(args) == 1
+    assert "cannot write the kept tests" in capsys.readouterr().err

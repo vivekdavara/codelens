@@ -121,3 +121,15 @@ def test_deleted_and_unchanged_files_are_ignored(tmp_path: Path) -> None:
 )
 def test_module_name(path: str, expected: tuple[str, str] | None) -> None:
     assert module_name(path) == expected
+
+
+def test_a_file_with_only_removals_is_ignored(tmp_path: Path) -> None:
+    before = "def f():\n    x = 1\n    return x\n"
+    found = find_targets(make_pr(tmp_path, {"m.py": before}, {"m.py": "def f():\n    return 1\n"}), tmp_path)
+    assert [t.changed for t in found.targets] == [frozenset({2})]
+    (tmp_path / "only").mkdir()
+    patch = make_pr(tmp_path / "only", {"m.py": before}, {"m.py": "def f():\n    x = 1\n"})
+    assert (
+        find_targets(patch, tmp_path / "only").targets == []
+        and find_targets(patch, tmp_path / "only").skipped == []
+    )
