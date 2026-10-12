@@ -1,8 +1,8 @@
 # CodeLens walkthrough
 
 Questions an interviewer is likely to ask about CodeLens, with short answers grounded in the code. Covers days
-1 to 3 (the diff parser, the review engine, the static pre-pass and the eval set); later days add their own
-sections.
+1 to 4 (the diff parser, the review engine, the static pre-pass and the eval set, and test generation); day 5
+adds its own section.
 
 ## The one-minute version
 
@@ -226,6 +226,73 @@ CL003 now checks the call's arity against the built-in methods (`list.clear` tak
 fired on CodeLens's own `prompts.py`, on the `"{max_findings}"` token passed to `.replace`, so search tokens
 are skipped. A test now requires 0 hits on CodeLens's own sources.
 
+## Test generation (day 4)
+
+**What does `codelens testgen` do?** `cli.run_testgen` → `testgen.generate`:
+
+1. `find_targets` lists the top-level functions the diff adds lines to, in Python files that match the
+   checkout (the pre-pass's `static.checked_lines`), each with its import name (`src/` layout aware).
+2. `build_prompt` shows each module whole behind a numbered margin, naming its changed functions; one call
+   per PR asks for up to 10 standalone pytest files as `{"tests": [{"function", "code"}]}`.
+3. `parse_candidates` rejects bad items one by one (unknown function, not Python, no test in it) before any
+   costs a run.
+4. The existing suite runs once (`--tests`) for a baseline; then each candidate runs alone through
+   `sandbox.run_pytest`, and is kept if it passes and runs a changed function's statement nothing ran before.
+5. The report gives each verdict and the coverage of the changed functions before and after; `--out`
+   writes the kept files.
+
+**Why only top-level functions?** A test of a method first has to build the object, often with
+collaborators, and a model guessing a constructor from one module's source mostly writes tests that fail at
+setup. Top-level functions are where generated tests pass often enough to be worth the runs. Methods are the
+obvious next step (DESIGN.md, "Targets").
+
+**How do you decide a test is worth keeping?** It must pass, and it must run at least one statement of a
+changed function's body that neither the existing suite nor an earlier kept test ran (`generate`, the
+`covered` set). Statements are coverage.py's own (`Coverage.analysis2`), the `def` line is excluded because
+it runs on import, and candidates are judged in the model's order, so of two tests of the same branch the
+first is kept. A failing test is never kept, whatever it covered.
+
+**Doesn't "keep only passing tests" just pin the current behaviour, bugs included?** Yes, and the README
+says so. A test of what buggy code *should* do fails and is dropped, so kept tests are regression tests,
+not bug finders; failing candidates are listed with their output because one may be pointing at a bug. The
+sample shows the other limit too: candidates 0 and 3 test behaviour the PR added, on lines the suite already
+ran, so line coverage can't tell them from repeats. Branch coverage, or mutation testing (keep a test that
+kills a mutant of a changed line), would be the stronger criterion.
+
+**You run code a model wrote, steered by a PR. How is that safe?** It isn't a sandbox, and the design says
+so; it's defence in depth (`sandbox.py`). The child's environment comes from an allow-list (no API key, no
+`GITHUB_TOKEN`); it runs in a scratch directory with an empty pytest config; the whole process group is
+killed at the timeout and after every run; coverage and pytest are imported before the project's
+directories go on `sys.path`. What it can't stop: on Linux a process can read the environment of every
+other process of the same user (`/proc/<pid>/environ`), and it can open sockets and write anywhere the
+user can. So the right deployment splits the work: the model call needs the key and runs no PR code, the
+test runs need no key and run PR code, and they belong in separate steps or jobs. That's why the action
+doesn't run test generation yet.
+
+**Why does the child write a JSON report instead of using its exit status?** A test can call `os._exit(0)`:
+the process exits 0 with no tests reported. The verdict comes from the report the bootstrap writes after
+`pytest.main` returns, so no report means "error", never "pass" (`test_an_early_exit_is_an_error_not_a_pass`,
+and candidate 9 in the sample).
+
+**Why give a candidate its own empty `pytest.ini`?** pytest finds its config from the tests' common
+ancestor, whatever `--rootdir` says, so a `pytest.ini` above the scratch file would apply its `addopts`. `-c`
+with an empty file of CodeLens's own rules it out (`test_the_project_pytest_config_does_not_apply...`).
+
+**What did you measure?** On the `stock` sample: 5 of the 10 candidates that ran were kept, and coverage
+of the changed functions' bodies went from 8 of 18 statements to 17 of 18. The answer is hand-written
+(no API key here), chosen to exercise each decision, so that measures the filter, not a model; one
+recorded call would measure a model (`evals/testgen/README.md`).
+
+**Tell me about something you got wrong.** The runner's first version read the child's output through a pipe.
+Overnight a test run took over two minutes, and I blamed the pipe: a test leaves a 60 s sleeper running,
+the sleeper inherits the pipe, and reading it to the end waits for the sleeper. I switched to a file and
+a wait, and the commit message tells that story. When I went to put the number in the README, I rebuilt
+the old version (`scripts/measure_runner_stall.py`) and it returned in 0.2 s. pytest's output capture gives the
+sleeper a capture file, not the pipe. The two minutes were the laptop going to sleep mid-run. The stall
+is real only when the test turns capture off (`capsys.disabled()`): 30.2 s against 0.29 s. So the change
+stayed, the regression test now uses that case (before, it passed on both versions), and the docs carry
+the measured numbers and the correction. Lesson: measure the mechanism before writing down the cause.
+
 ## Large PRs and limits
 
 **What if the PR is huge?** The diff shown to the model is capped at 200,000 characters (roughly 50K tokens;
@@ -240,14 +307,17 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 546 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 620 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
 negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
 repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); two CI
 jobs that run full reviews through `action.yml` (the sample PR, and an eval case with the static pre-pass);
-and the eval set, whose static numbers are pinned by a test.
+and the eval set, whose static numbers are pinned by a test. Day 4's runner is tested with real child
+processes (`tests/test_sandbox.py`: a hang, an early exit, a background child, planted `coverage.py` and
+`pytest.py`, secrets in the parent's environment), and the test-generation sample's numbers are pinned by
+`tests/test_testgen_sample.py`.
 
 **Did anything find bugs you had missed?** A review of the whole day-2 diff by nine independent agents (line
 by line, removed behaviour, call sites, Python pitfalls, wrappers, reuse, simplification, efficiency,
@@ -274,7 +344,10 @@ showed `ast.parse` printing the PR's SyntaxWarnings into CodeLens's output (`tes
 - **The model's review quality is unmeasured.** The eval set and harness exist; the 14 real answers need an
   API key (`codelens eval --provider anthropic --record`). The hand-written recordings prove the pipeline,
   not the model.
-- Test generation (day 4).
+- **The model's test writing is unmeasured too.** The sample's answer is hand-written; one recorded call
+  would measure a model. Test generation keeps only passing tests that add line coverage, so it can't keep a
+  test of new behaviour on old lines, and it never keeps a test that exposes a bug. Methods aren't targets.
+  The action doesn't run it yet: it needs the two-step split described above.
 - The static pre-pass is Python only, and its eval recall is an upper bound (same author as the rules).
 - Comments on removed lines (LEFT side): the prompt numbers only new-file lines, so a removal is flagged on
   the nearest line still in the file.
