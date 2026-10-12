@@ -29,7 +29,7 @@ from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, Provider
 from codelens.review import Review, review
 from codelens.sandbox import DEFAULT_TIMEOUT
 from codelens.static import StaticResult, analyse, find_ruff
-from codelens.testgen import MAX_TESTS, TestgenResult, generate, kept_files
+from codelens.testgen import MAX_TESTS, TestgenResult, describe, generate, kept_files
 
 _STATUS_LETTER = {"added": "A", "deleted": "D", "modified": "M", "renamed": "R", "copied": "C"}
 
@@ -518,12 +518,13 @@ def testgen_json(result: TestgenResult) -> dict[str, Any]:
         "over_cap": result.over_cap,
         "baseline": None
         if baseline is None
-        else {"outcome": baseline.outcome.value, "exit": baseline.exit_code},
+        else {"outcome": baseline.outcome.value, "exit": baseline.exit_code, "counts": baseline.counts},
         "candidates": [
             {
                 "index": v.candidate.index,
                 "function": v.candidate.target.qualname,
                 "outcome": v.outcome.value,
+                "counts": v.counts,
                 "kept": v.kept,
                 "reason": v.reason,
                 "new_lines": [{"path": p, "line": n} for p, n in v.new_lines],
@@ -590,7 +591,9 @@ def print_testgen(result: TestgenResult, out: TextIO) -> None:
     for target in result.unmeasured:
         print(f"not measured: {target.qualname} (no run reported its file)", file=out)
     if result.baseline is not None:
-        print(f"existing suite: {result.baseline.outcome.value}", file=out)
+        suite = result.baseline
+        detail = f" ({describe(suite.counts)})" if suite.exit_code is not None else ""
+        print(f"existing suite: {suite.outcome.value}{detail}", file=out)
     for path, reason in result.skipped:
         print(f"not tested: {path} ({reason})", file=out)
 

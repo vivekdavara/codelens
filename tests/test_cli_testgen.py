@@ -60,7 +60,7 @@ def test_testgen_reports_what_it_kept_and_the_coverage_it_added(
         "  school.grades.curve: statements run 0 of 1 before, 1 of 1 after",
         "coverage of the changed functions: 3 of 8 statements before, 7 of 8 after (+50.0 points)",
         "  of them on lines the diff adds: 1 of 3 before, 2 of 3 after",
-        "existing suite: passed",
+        "existing suite: passed (1 passed)",
     ]
 
 

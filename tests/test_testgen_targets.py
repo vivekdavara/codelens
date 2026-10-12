@@ -55,7 +55,8 @@ def test_changed_top_level_functions_are_targets(tmp_path: Path) -> None:
         ("shop.cart.total", 4, 5, 7),
         ("shop.cart.rate", 14, 16, 16),  # the decorator starts it; the body is what a test runs
     ]
-    assert found.targets[0].changed == frozenset({4, 5, 6, 7})
+    # Statement first lines: the def line (4) runs on import and is no body statement.
+    assert found.targets[0].changed == frozenset({5, 6, 7})
     assert found.targets[0].import_root == "" and found.targets[0].path == "shop/cart.py"
     assert found.sources["shop/cart.py"][3] == "def total(prices, discount=0):"
     assert found.skipped == []  # the method's change is not a target, and says nothing
@@ -133,3 +134,51 @@ def test_a_file_with_only_removals_is_ignored(tmp_path: Path) -> None:
         find_targets(patch, tmp_path / "only").targets == []
         and find_targets(patch, tmp_path / "only").skipped == []
     )
+
+
+def test_a_body_on_the_def_line_is_not_a_target(tmp_path: Path) -> None:
+    after = "def f(x): return x + 1\n\n\ndef g(\n    x,\n): return x\n\n\ndef h(x):\n    return x\n"
+    found = find_targets(make_pr(tmp_path, {}, {"m.py": after}), tmp_path)
+    assert [t.name for t in found.targets] == ["h"]
+    assert found.skipped == [
+        ("m.py", "f: its body is on the def line, which import runs"),
+        ("m.py", "g: its body is on the def line, which import runs"),
+    ]
+
+
+def test_an_edit_inside_a_multi_line_statement_counts_as_that_statement(tmp_path: Path) -> None:
+    before = "def f(a, b):\n    return sum(\n        a,\n        b,\n    )\n"
+    found = find_targets(
+        make_pr(tmp_path, {"m.py": before}, {"m.py": before.replace("b,", "b * 2,")}), tmp_path
+    )
+    assert [t.changed for t in found.targets] == [frozenset({2})]  # coverage reports the return on line 2
+
+
+def test_when_src_is_a_package_its_modules_import_from_the_root(tmp_path: Path) -> None:
+    patch = make_pr(tmp_path, {"src/__init__.py": ""}, {"src/utils.py": "def f():\n    return 1\n"})
+    assert [(t.import_root, t.qualname) for t in find_targets(patch, tmp_path).targets] == [
+        ("", "src.utils.f")
+    ]
+
+
+def test_test_files_and_test_named_functions_are_not_targets(tmp_path: Path) -> None:
+    after = {
+        "shop/tests.py": "def helper():\n    return 1\n",
+        "shop/test.py": "def helper():\n    return 1\n",
+        "conftest.py": "def fx():\n    return 1\n",
+        "db.py": "def test_connection(host):\n    return host\n\n\ndef connect(host):\n    return host\n",
+    }
+    found = find_targets(make_pr(tmp_path, {}, after), tmp_path)
+    assert [t.qualname for t in found.targets] == ["db.connect"]
+    assert sorted(found.skipped) == [
+        ("conftest.py", "a test file"),
+        ("db.py", "test_connection: named like a test, so pytest would collect it"),
+        ("shop/test.py", "a test file"),
+        ("shop/tests.py", "a test file"),
+    ]
+
+
+def test_a_byte_order_mark_does_not_stop_a_file_parsing(tmp_path: Path) -> None:
+    found = find_targets(make_pr(tmp_path, {}, {"bom.py": "\ufeffdef f():\n    return 1\n"}), tmp_path)
+    assert [t.qualname for t in found.targets] == ["bom.f"]
+    assert found.sources["bom.py"][0] == "def f():"

@@ -172,3 +172,14 @@ def test_no_module_inside_the_budget_means_no_call(tmp_path: Path) -> None:
     assert result.targets == [] and result.skipped == [
         ("school/grades.py", "over the 10-character prompt budget")
     ]
+
+
+def test_a_candidate_that_only_xfails_is_not_kept(tmp_path: Path) -> None:
+    xfail = (
+        GRADE,
+        "@pytest.mark.xfail\ndef test_hundred():\n    with pytest.raises(ValueError):\n        grade(100)\n",
+    )
+    result = generate(project(tmp_path), tmp_path, Scripted(xfail))
+    (verdict,) = result.verdicts
+    assert not verdict.kept and verdict.exit_code == 0
+    assert verdict.reason == "no test passed cleanly (1 xfailed)"

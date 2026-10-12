@@ -49,7 +49,7 @@ def test_the_sample_keeps_five_tests_and_reaches_17_of_18_statements(
         "changed_before": 7,
         "changed_after": 16,
     }
-    assert data["baseline"] == {"outcome": "passed", "exit": 0}
+    assert data["baseline"]["outcome"] == "passed" and data["baseline"]["counts"]["passed"] == 2
 
 
 def test_the_committed_recording_is_what_the_script_writes(tmp_path: Path) -> None:

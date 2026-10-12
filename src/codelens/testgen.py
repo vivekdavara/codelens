@@ -34,6 +34,7 @@ __all__ = [
     "TestgenResult",
     "Verdict",
     "build_prompt",
+    "describe",
     "find_targets",
     "generate",
     "kept_files",
@@ -64,7 +65,8 @@ class Target:
     body_start: int
     """First line of the body: the lines a test can make run (the ``def`` line runs on import)."""
     changed: frozenset[int]
-    """Lines the pull request added inside the definition."""
+    """First lines of the body's statements that hold a line the pull request added. Coverage reports a
+    statement by its first line, so an edit to the third line of a multi-line call counts as that call."""
 
     @property
     def qualname(self) -> str:
@@ -80,18 +82,19 @@ class Targets:
     """The checked new version of each file that has targets, by path."""
 
 
-def module_name(path: str) -> tuple[str, str] | None:
+def module_name(path: str, *, src_package: bool = False) -> tuple[str, str] | None:
     """``(import root, dotted module name)`` for a Python file, or ``None`` if it can't be imported by name.
 
-    Files under a top-level ``src/`` import from there (the src layout); everything else from the checkout's
-    root. ``__init__.py`` is its package. Every part must be an identifier and not a keyword:
-    ``scripts/build-docs.py`` or ``class/x.py`` can't be imported with an ``import`` statement.
+    Files under a top-level ``src/`` import from there (the src layout), unless ``src`` is itself a package
+    (``src_package``: it has an ``__init__.py``), when ``src/utils.py`` is ``src.utils``; everything else
+    imports from the checkout's root. ``__init__.py`` is its package. Every part must be an identifier and
+    not a keyword: ``scripts/build-docs.py`` or ``class/x.py`` can't be imported with an ``import``.
     """
     parts = list(PurePosixPath(path).parts)
     if not parts or not parts[-1].endswith(".py"):
         return None
     root = ""
-    if parts[0] == "src" and len(parts) > 1:
+    if parts[0] == "src" and len(parts) > 1 and not src_package:
         root, parts = "src", parts[1:]
     parts[-1] = parts[-1].removesuffix(".py")
     if parts[-1] == "__init__":
@@ -112,6 +115,29 @@ def _parse(source: str) -> ast.Module | str:
             return "nested too deeply to parse"
 
 
+_TEST_FILES = frozenset({"test.py", "tests.py", "conftest.py"})
+"""Test files the prompt ranking's name rules don't catch (they look for test_*, *_test and test dirs)."""
+
+
+def _shares_header_line(lines: list[str], node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether the body starts on a line of the ``def`` itself (``def f(x): return x``): coverage then
+    can't tell a call from the import, which runs that line too."""
+    first = node.body[0]
+    before = lines[first.lineno - 1].encode("utf-8")[: first.col_offset]  # col_offset counts UTF-8 bytes
+    return bool(before.strip())
+
+
+def _statement_lines(node: ast.FunctionDef | ast.AsyncFunctionDef, added: set[int]) -> frozenset[int]:
+    """The first line of the innermost body statement holding each added line (see :attr:`Target.changed`)."""
+    statements = [s for top in node.body for s in ast.walk(top) if isinstance(s, ast.stmt)]
+    firsts = set()
+    for n in added:
+        holding = [s.lineno for s in statements if s.lineno <= n <= (s.end_lineno or s.lineno)]
+        if holding:
+            firsts.add(max(holding))
+    return frozenset(firsts)
+
+
 def find_targets(patch: PatchSet, root: Path) -> Targets:
     """The top-level functions ``patch`` adds lines to, in Python files that match the checkout ``root``.
 
@@ -121,16 +147,17 @@ def find_targets(patch: PatchSet, root: Path) -> Targets:
     the closure, which the model can't do reliably from one module's source.
     """
     result = Targets()
+    src_package = (root / "src" / "__init__.py").is_file()
     for file in patch:
         if file.is_binary or file.status is FileStatus.DELETED or not file.path.endswith(".py"):
             continue
         added = set(file.added_lines())
         if not added:
             continue
-        if budget_rank(file) == 1:
+        if budget_rank(file) == 1 or PurePosixPath(file.path).name in _TEST_FILES:
             result.skipped.append((file.path, "a test file"))
             continue
-        named = module_name(file.path)
+        named = module_name(file.path, src_package=src_package)
         if named is None:
             result.skipped.append((file.path, "not importable as a module"))
             continue
@@ -138,6 +165,8 @@ def find_targets(patch: PatchSet, root: Path) -> Targets:
         if isinstance(lines, str):
             result.skipped.append((file.path, lines))
             continue
+        # Python drops a UTF-8 byte-order mark when it imports a file; ast.parse of the text doesn't.
+        lines = [lines[0].removeprefix("\ufeff"), *lines[1:]] if lines else lines
         tree = _parse("\n".join(lines))
         if isinstance(tree, str):
             result.skipped.append((file.path, tree))
@@ -148,15 +177,28 @@ def find_targets(patch: PatchSet, root: Path) -> Targets:
                 continue
             start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
             end = node.end_lineno or node.lineno
-            changed = frozenset(n for n in added if start <= n <= end)
             # A second definition of a name replaces the first, and an import gets the last one.
             found.pop(node.name, None)
-            if changed:
-                found[node.name] = Target(
-                    file.path, named[1], named[0], node.name, start, end, node.body[0].lineno, changed
+            if not any(start <= n <= end for n in added):
+                continue
+            if node.name.startswith("test"):
+                # pytest collects any test* function a test file imports, as a test of its own.
+                result.skipped.append(
+                    (file.path, f"{node.name}: named like a test, so pytest would collect it")
                 )
+                continue
+            if _shares_header_line(lines, node):
+                result.skipped.append(
+                    (file.path, f"{node.name}: its body is on the def line, which import runs")
+                )
+                continue
+            changed = _statement_lines(node, added)
+            found[node.name] = Target(
+                file.path, named[1], named[0], node.name, start, end, node.body[0].lineno, changed
+            )
         if not found:
-            result.skipped.append((file.path, "no changed top-level function"))
+            if not any(path == file.path for path, _ in result.skipped):
+                result.skipped.append((file.path, "no changed top-level function"))
             continue
         result.targets += sorted(found.values(), key=lambda t: t.start)
         result.sources[file.path] = lines
@@ -324,6 +366,11 @@ def parse_candidates(text: str, targets: Sequence[Target]) -> tuple[list[Candida
     return candidates, rejections
 
 
+def describe(counts: dict[str, int]) -> str:
+    """``2 passed, 1 skipped``: the non-zero counts of a run, or ``no tests`` when there are none."""
+    return ", ".join(f"{n} {kind}" for kind, n in counts.items() if n) or "no tests"
+
+
 SUITE_TIMEOUT = 600.0
 """Seconds the existing suite may take for the baseline: a whole suite, so far longer than one candidate."""
 
@@ -337,6 +384,9 @@ class Verdict:
     """``(path, line)`` of the changed functions' lines this candidate ran first (empty unless kept)."""
     output: str = ""
     seconds: float = 0.0
+    exit_code: int | None = None
+    counts: dict[str, int] = field(default_factory=dict)
+    """How its tests ended (:data:`codelens.sandbox.COUNTS`)."""
 
     @property
     def reason(self) -> str:
@@ -345,6 +395,8 @@ class Verdict:
             return f"passes, and runs {n} new line{'s' if n != 1 else ''} of changed functions"
         if self.outcome is Outcome.PASSED:
             return "passes, but runs no new line of a changed function"
+        if self.outcome is Outcome.FAILED and self.exit_code == 0:
+            return f"no test passed cleanly ({describe(self.counts)})"
         return {
             Outcome.FAILED: "fails",
             Outcome.TIMEOUT: "timed out",
@@ -473,7 +525,11 @@ def generate(
             ran = body_lines(run)
             new = sorted(ran - covered) if run.outcome is Outcome.PASSED else []
             covered.update(new)
-            result.verdicts.append(Verdict(candidate, run.outcome, bool(new), new, run.output, run.seconds))
+            result.verdicts.append(
+                Verdict(
+                    candidate, run.outcome, bool(new), new, run.output, run.seconds, run.exit_code, run.counts
+                )
+            )
     for target in prompt.targets:
         if where[target.path] not in statements:
             result.unmeasured.append(target)
