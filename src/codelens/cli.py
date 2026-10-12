@@ -373,6 +373,15 @@ def recordings_dir(args: argparse.Namespace) -> Path:
     return args.recordings or Path(os.environ.get("CODELENS_RECORDINGS") or DEFAULT_RECORDINGS)
 
 
+def path_in_diff(directory: Path, source_root: Path) -> str | None:
+    """``directory`` as a path in the diff (relative to the checkout), or ``None`` when it's outside it."""
+    try:
+        relative = directory.resolve().relative_to(source_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    return relative if relative != "." else None
+
+
 def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
     if args.post and (not repo or args.pr is None):
@@ -403,6 +412,7 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
             max_prompt_chars=args.max_prompt_chars,
             min_severity=Severity(args.min_severity),
             static_if_unrecorded=args.missing_recording == "static",
+            recordings=path_in_diff(recordings, args.source_root),
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: review failed: {exc}", file=err)

@@ -543,3 +543,31 @@ def test_a_static_only_review_is_posted_like_any_other(
     body = fake_server.requests[-1].body
     assert "from static analysis only" in body["body"] and body["commit_id"] == "c5"
     assert [(c["path"], c["line"]) for c in body["comments"]] == [("svc/pay.py", 3)]
+
+
+def test_a_recording_committed_to_the_pr_still_replays(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # The flow for CodeLens's own PRs: record the PR's review, commit the recording to the PR, and CI
+    # replays it. Committing it adds it to the diff; it must not change the prompt it was recorded for.
+    head = tmp_path / "head"
+    recordings = head / ".codelens" / "recordings"
+    request = build_prompt(parse_patch(DIFF)).request
+    saved = write_recording(recordings, request, Completion(ANSWER, HAND_WRITTEN), "recorded")
+    added = "".join(f"+{line}\n" for line in saved.read_text().splitlines())
+    name = f".codelens/recordings/{saved.name}"
+    count = len(saved.read_text().splitlines())
+    diff = tmp_path / "pr.diff"
+    diff.write_text(
+        DIFF + f"diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n"
+        f"@@ -0,0 +1,{count} @@\n{added}"
+    )
+    args = ("review", str(diff), "--source-root", str(head), "--recordings", str(recordings))
+    code, out, _ = run(capsys, *args)
+    assert code == 0 and out.splitlines()[0].startswith("svc/pay.py:3  high  bug  Clamping hides the error")
+    assert f"not reviewed: {name} (a CodeLens recording)" in out
+    # Recordings outside the checkout don't exclude anything from it.
+    code, _, err = run(
+        capsys, "review", str(diff), "--source-root", str(head / "svc"), "--recordings", str(recordings)
+    )
+    assert code == 1 and "no recorded response" in err

@@ -16,7 +16,7 @@ from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_promp
 from codelens.providers import Provider, RecordingMissing, Usage
 from codelens.static import StaticResult
 
-__all__ = ["Review", "dedupe", "rank", "review"]
+__all__ = ["RECORDING", "Review", "dedupe", "rank", "review"]
 
 
 @dataclass
@@ -83,6 +83,14 @@ def dedupe(findings: Iterable[Finding]) -> tuple[list[Finding], int]:
     return list(best.values()), total - len(best)
 
 
+RECORDING = "a CodeLens recording"
+"""Why a file under the recordings directory is not reviewed."""
+
+
+def _under(path: str, directory: str | None) -> bool:
+    return directory is not None and (path == directory or path.startswith(directory + "/"))
+
+
 def review(
     patch: PatchSet,
     provider: Provider,
@@ -92,6 +100,7 @@ def review(
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
     min_severity: Severity = Severity.LOW,
     static_if_unrecorded: bool = False,
+    recordings: str | None = None,
 ) -> Review:
     """Review ``patch`` with one provider call, adding the static pre-pass's findings if it ran.
 
@@ -107,17 +116,24 @@ def review(
     ``unrecorded`` names the missing recording. This is for running on new pull requests (CodeLens's own,
     in CI) without a key; only a missing recording falls back, never an edited one or a live provider's
     failure.
+
+    Files under ``recordings`` (the recordings directory as a path in the diff) are never reviewed: they are
+    model answers, not code, and leaving them out means a recording committed to a pull request doesn't
+    change the prompt it answers.
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
     if max_findings < 1 or max_prompt_chars < 1:
         raise ValueError("max_findings and max_prompt_chars must be positive")
-    pre = static.findings if static is not None else []
+    own = [f.path for f in patch if _under(f.path, recordings)]
+    if own:
+        patch = PatchSet([f for f in patch if not _under(f.path, recordings)])
+    pre = [f for f in static.findings if not _under(f.path, recordings)] if static is not None else []
     # The model is asked for the same cap the review applies.
     prompt = build_prompt(patch, max_prompt_chars, max_findings, static=pre)
     result = Review(
         [],
-        skipped=prompt.skipped,
+        skipped=[(path, RECORDING) for path in own] + prompt.skipped,
         reviewed=[f.path for f in prompt.files],
         provider=provider.name,
         static=static,

@@ -302,3 +302,37 @@ def test_nothing_reviewable_makes_no_call_and_needs_no_recording(tmp_path: Path)
     deleted = parse_patch("diff --git a/README.md" + DIFF.split("diff --git a/README.md", 1)[1])
     result = review(deleted, RecordedProvider(tmp_path), static_if_unrecorded=True)
     assert result.unrecorded is None and result.findings == [] and result.reviewed == []
+
+
+RECORDING_FILE = """\
+diff --git a/.codelens/recordings/0a1b.json b/.codelens/recordings/0a1b.json
+new file mode 100644
+--- /dev/null
++++ b/.codelens/recordings/0a1b.json
+@@ -0,0 +1,3 @@
++{
++  "response": "{\\"findings\\": []}"
++}
+"""
+
+
+def test_files_under_the_recordings_directory_are_never_reviewed() -> None:
+    with_recording = parse_patch(DIFF + RECORDING_FILE)
+    provider = Scripted(answer(item(4)))
+    result = review(with_recording, provider, recordings=".codelens/recordings")
+    # The same prompt as without the recording, so a recording committed to the PR still answers it.
+    assert provider.requests[0].key() == build_prompt(PATCH).request.key()
+    assert result.skipped == [
+        (".codelens/recordings/0a1b.json", "a CodeLens recording"),
+        ("README.md", "deleted file"),
+    ]
+    assert [f.line for f in result.findings] == [4]
+    # Only that directory: a sibling whose name starts the same way is reviewed.
+    shown = review(with_recording, Scripted(answer()), recordings=".codelens/rec")
+    assert ".codelens/recordings/0a1b.json" in shown.reviewed
+
+
+def test_static_findings_on_recordings_are_dropped_too() -> None:
+    pre = StaticResult(findings=[static_finding(4), static_finding(2, path=".codelens/recordings/x.py")])
+    result = review(PATCH, Scripted(answer()), static=pre, recordings=".codelens/recordings")
+    assert [(f.path, f.line) for f in result.findings] == [("svc/pay.py", 4)]
