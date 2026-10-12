@@ -342,9 +342,9 @@ class Verdict:
     def reason(self) -> str:
         if self.kept:
             n = len(self.new_lines)
-            return f"passes and runs {n} line{'s' if n != 1 else ''} of changed functions nothing else ran"
+            return f"passes, and runs {n} new line{'s' if n != 1 else ''} of changed functions"
         if self.outcome is Outcome.PASSED:
-            return "passes, but runs no line of a changed function that wasn't already run"
+            return "passes, but runs no new line of a changed function"
         return {
             Outcome.FAILED: "fails",
             Outcome.TIMEOUT: "timed out",

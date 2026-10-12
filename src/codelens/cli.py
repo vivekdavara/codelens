@@ -4,7 +4,8 @@
 with a model provider (recorded by default) and prints the review, or posts it with ``--post``.
 ``codelens prompt`` prints exactly what the model would be sent. ``codelens static`` runs only the static
 pre-pass (ruff and CodeLens's rules on the Python lines the diff adds). ``codelens eval`` scores all of it
-on the eval set of pull requests with seeded bugs.
+on the eval set of pull requests with seeded bugs. ``codelens testgen`` asks for pytest tests of the
+functions the diff changes and keeps the ones that pass and add coverage.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, re
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
+from codelens.sandbox import DEFAULT_TIMEOUT
 from codelens.static import StaticResult, analyse, find_ruff
+from codelens.testgen import MAX_TESTS, TestgenResult, generate, kept_files
 
 _STATUS_LETTER = {"added": "A", "deleted": "D", "modified": "M", "renamed": "R", "copied": "C"}
 
@@ -39,6 +42,16 @@ def positive_int(text: str) -> int:
         value = 0
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be a positive integer, not {text!r}")
+    return value
+
+
+def positive_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = 0.0
+    if not value > 0 or value == float("inf"):
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {text!r}")
     return value
 
 
@@ -103,6 +116,36 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--record", action="store_true", help="save the live provider's answers to --recordings")
     ev.add_argument("--static-only", action="store_true", help="score only the static pre-pass")
     ev.add_argument("--json", action="store_true", help="print every finding and score as JSON")
+
+    tg = sub.add_parser("testgen", help="generate pytest tests for the functions a diff changes")
+    tg.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
+    tg.add_argument(
+        "--source-root", type=Path, default=Path("."), help="checkout of the diff's new version (default: .)"
+    )
+    tg.add_argument(
+        "--tests",
+        type=Path,
+        action="append",
+        default=[],
+        help="the existing suite, relative to --source-root (repeatable): what it covers is the baseline",
+    )
+    tg.add_argument(
+        "--provider", choices=PROVIDERS, help="model provider (default: $CODELENS_PROVIDER or recorded)"
+    )
+    tg.add_argument("--model", help="model name for a live provider")
+    tg.add_argument("--recordings", type=Path, help="recordings directory (default: .codelens/recordings)")
+    tg.add_argument("--record", action="store_true", help="save the live provider's answer to --recordings")
+    tg.add_argument("--max-tests", type=positive_int, default=MAX_TESTS, help="candidates to run, at most")
+    tg.add_argument(
+        "--timeout", type=positive_float, default=DEFAULT_TIMEOUT, help="seconds per candidate (default: 60)"
+    )
+    tg.add_argument(
+        "--python", help="interpreter that runs the tests, with pytest and coverage (default: this)"
+    )
+    tg.add_argument("--out", type=Path, help="write the kept tests into this directory")
+    tg.add_argument(
+        "--json", action="store_true", help="print the result, with every candidate's code, as JSON"
+    )
     return parser
 
 
@@ -456,6 +499,154 @@ def run_eval(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     return 0
 
 
+def _share(part: int, whole: int) -> str:
+    return f"{part} of {whole}"
+
+
+def testgen_json(result: TestgenResult) -> dict[str, Any]:
+    baseline = result.baseline
+    return {
+        "provider": result.provider,
+        "model": result.model,
+        "usage": {"input_tokens": result.usage.input_tokens, "output_tokens": result.usage.output_tokens},
+        "targets": [
+            {"function": t.qualname, "path": t.path, "lines": [t.start, t.end], "changed": sorted(t.changed)}
+            for t in result.targets
+        ],
+        "skipped": [{"path": p, "reason": r} for p, r in result.skipped],
+        "rejections": [{"index": r.index, "kind": r.kind, "detail": r.detail} for r in result.rejections],
+        "over_cap": result.over_cap,
+        "baseline": None
+        if baseline is None
+        else {"outcome": baseline.outcome.value, "exit": baseline.exit_code},
+        "candidates": [
+            {
+                "index": v.candidate.index,
+                "function": v.candidate.target.qualname,
+                "outcome": v.outcome.value,
+                "kept": v.kept,
+                "reason": v.reason,
+                "new_lines": [{"path": p, "line": n} for p, n in v.new_lines],
+                "seconds": round(v.seconds, 3),
+                "code": v.candidate.code,
+                "output": v.output,
+            }
+            for v in result.verdicts
+        ],
+        "coverage": [
+            {
+                "function": c.target.qualname,
+                "statements": c.statements,
+                "before": c.before,
+                "after": c.after,
+                "changed": c.changed,
+                "changed_before": c.changed_before,
+                "changed_after": c.changed_after,
+            }
+            for c in result.coverage
+        ],
+        "unmeasured": [t.qualname for t in result.unmeasured],
+        "totals": result.totals() if result.coverage else None,
+    }
+
+
+def print_testgen(result: TestgenResult, out: TextIO) -> None:
+    for v in result.verdicts:
+        status = "kept   " if v.kept else "dropped"
+        print(f"{status} [{v.candidate.index}] {v.candidate.target.qualname}: {v.reason}", file=out)
+    for r in result.rejections:
+        print(f"rejected [{r.index}] {r.kind}: {r.detail}", file=out)
+    if result.over_cap:
+        print(f"over the cap: {plural(result.over_cap, 'candidate')} not run", file=out)
+    if not result.targets:
+        print("no changed top-level function to test (no model call made)", file=out)
+    else:
+        files = len({t.path for t in result.targets})
+        print(
+            f"{plural(len(result.targets), 'changed function')} in {plural(files, 'file')}: "
+            f"kept {len(result.kept)} of {plural(len(result.verdicts), 'test')} run",
+            file=out,
+        )
+        usage = result.usage
+        tokens = f"{usage.input_tokens:,} input / {usage.output_tokens:,} output tokens"
+        print(f"tests from {result.provider}: {result.model or 'no answer'}, {tokens}", file=out)
+    for c in result.coverage:
+        print(
+            f"  {c.target.qualname}: statements run {_share(c.before, c.statements)} before, "
+            f"{_share(c.after, c.statements)} after",
+            file=out,
+        )
+    if result.coverage:
+        t = result.totals()
+        points = 100 * (t["after"] - t["before"]) / t["statements"] if t["statements"] else 0.0
+        before, after = _share(t["before"], t["statements"]), _share(t["after"], t["statements"])
+        print(
+            f"coverage of the changed functions: {before} statements before, {after} after "
+            f"(+{points:.1f} points)",
+            file=out,
+        )
+        before, after = _share(t["changed_before"], t["changed"]), _share(t["changed_after"], t["changed"])
+        print(f"  of them on lines the diff adds: {before} before, {after} after", file=out)
+    for target in result.unmeasured:
+        print(f"not measured: {target.qualname} (no run reported its file)", file=out)
+    if result.baseline is not None:
+        print(f"existing suite: {result.baseline.outcome.value}", file=out)
+    for path, reason in result.skipped:
+        print(f"not tested: {path} ({reason})", file=out)
+
+
+def run_testgen(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    patch = read_patch(args.file, err)
+    if patch is None:
+        return 1
+    provider: Provider | None = None
+    try:
+        recordings = recordings_dir(args)
+        provider = make_provider(args.provider, model=args.model, recordings=recordings)
+        if args.record:
+            if provider.name == "recorded":
+                print("codelens: --record needs a live provider (--provider anthropic|openai)", file=err)
+                return 2
+            try:  # before the paid call, so a bad path can't throw its answer away
+                recordings.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"codelens: cannot use {recordings} for recordings: {exc}", file=err)
+                return 1
+            provider = Recorder(provider, recordings)
+        result = generate(
+            patch,
+            args.source_root,
+            provider,
+            tests=args.tests,
+            max_tests=args.max_tests,
+            timeout=args.timeout,
+            python=args.python,
+        )
+    except (ProviderError, FindingsFormatError) as exc:
+        print(f"codelens: test generation failed: {exc}", file=err)
+        if isinstance(provider, Recorder) and provider.written:
+            print(f"recorded the unusable answer in {provider.written[-1]}", file=err)
+        return 1
+    if isinstance(provider, Recorder):
+        for path in provider.written:
+            print(f"recorded {path}", file=err)
+    if args.json:
+        json.dump(testgen_json(result), out, indent=2)
+        out.write("\n")
+    else:
+        print_testgen(result, out)
+    if args.out is not None and result.kept:
+        try:
+            args.out.mkdir(parents=True, exist_ok=True)
+            for name, code in kept_files(result).items():
+                (args.out / name).write_text(code, encoding="utf-8")
+                print(f"wrote {args.out / name}", file=err)
+        except OSError as exc:
+            print(f"codelens: cannot write the kept tests to {args.out}: {exc}", file=err)
+            return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "version":
@@ -471,6 +662,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_eval(args, sys.stdout, sys.stderr)
     if args.command == "review":
         return run_review(args, sys.stdout, sys.stderr)
+    if args.command == "testgen":
+        return run_testgen(args, sys.stdout, sys.stderr)
     return 2  # pragma: no cover - argparse rejects unknown commands first
 
 

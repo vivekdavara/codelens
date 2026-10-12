@@ -89,7 +89,9 @@ def test_only_passing_tests_that_run_new_lines_are_kept(tmp_path: Path) -> None:
         ("school/grades.py", 7),
         ("school/grades.py", 8),
     ]
-    assert "passes, but runs no line" in result.verdicts[1].reason and result.verdicts[2].reason == "fails"
+    assert (
+        "passes, but runs no new line" in result.verdicts[1].reason and result.verdicts[2].reason == "fails"
+    )
     assert result.verdicts[5].reason == "timed out"
     coverage = {
         c.target.name: (c.statements, c.before, c.after, c.changed, c.changed_before, c.changed_after)
