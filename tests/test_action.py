@@ -84,6 +84,7 @@ def run_review_step(tmp_path: Path, **inputs: str) -> tuple[subprocess.Completed
         "RUNNER_TEMP": str(temp),
         "GITHUB_OUTPUT": str(output),
         "GITHUB_WORKSPACE": str(tmp_path),
+        "GITHUB_REPOSITORY": "o/r",
         "DIFF_PATH": "pr.diff",
         **inputs,
     }
@@ -117,7 +118,13 @@ def test_the_review_step_runs_static_alone_when_missing_recordings_may_fall_back
 
 
 def test_the_review_step_posts_only_a_review_of_the_prs_own_diff(tmp_path: Path) -> None:
-    pr = {"FROM_PR": "true", "PR_NUMBER": "12", "HEAD_SHA": "abc123", "RECORDINGS": "recs"}
+    pr = {
+        "FROM_PR": "true",
+        "PR_NUMBER": "12",
+        "HEAD_SHA": "abc123",
+        "HEAD_REPO": "o/r",
+        "RECORDINGS": "recs",
+    }
     done, outputs = run_review_step(tmp_path, PROVIDER="recorded", **pr)
     assert done.returncode == 0, done.stderr
     assert outputs["args"].endswith(
@@ -135,3 +142,18 @@ def test_the_review_step_skips_a_moved_pr_and_a_live_provider_without_a_key(tmp_
     assert "no api-key" in done.stdout and "args" not in outputs
     done, outputs = run_review_step(tmp_path / "b", PROVIDER="anthropic", API_KEY="sk-test")
     assert outputs["env"] == "provider=anthropic recordings=unset key=set"
+
+
+def test_the_review_step_does_not_post_on_a_fork_s_pull_request(tmp_path: Path) -> None:
+    # The fork's PR gets a read-only token: posting would answer 403 and fail the job. A deleted fork
+    # leaves head.repo null, which arrives as "".
+    pr = {"FROM_PR": "true", "PR_NUMBER": "12", "HEAD_SHA": "abc123", "MISSING_RECORDING": "static"}
+    for n, head_repo in enumerate(["someone/r", ""]):
+        done, outputs = run_review_step(tmp_path / str(n), PROVIDER="recorded", HEAD_REPO=head_repo, **pr)
+        assert done.returncode == 0, done.stderr
+        assert "not posting: a pull request from a fork" in done.stdout
+        assert "--post" not in outputs["args"] and outputs["args"].endswith("--commit abc123")
+    done, outputs = run_review_step(
+        tmp_path / "off", PROVIDER="recorded", HEAD_REPO="o/r", POST="false", **pr
+    )
+    assert "--post" not in outputs["args"] and "not posting" not in done.stdout

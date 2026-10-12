@@ -163,6 +163,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       run: |
         skip() {
           echo "::notice::CodeLens review skipped: $1"
@@ -203,10 +204,17 @@ runs:
         else
           args+=(--no-static)
         fi
-        # Post only a review of the PR's own diff: a diff-file's line numbers are not this PR's.
+        # Post only a review of the PR's own diff: a diff-file's line numbers are not this PR's. A fork's PR
+        # (or one whose fork was deleted) gets a read-only token, so posting would only fail the job.
         if [ "$FROM_PR" = "true" ]; then
           args+=(--commit "$HEAD_SHA")
-          if [ "${POST:-true}" = "true" ]; then args+=(--post --pr "$PR_NUMBER"); fi
+          if [ "${POST:-true}" != "true" ]; then
+            :
+          elif [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::notice::CodeLens is not posting: a pull request from a fork gets a read-only token (the review is in the job summary)"
+          else
+            args+=(--post --pr "$PR_NUMBER")
+          fi
         elif [ -n "$PR_NUMBER" ] && [ "${POST:-true}" = "true" ]; then
           echo "::notice::CodeLens is not posting: the review is of diff-file, not of this pull request's diff"
         fi
