@@ -25,6 +25,7 @@ __all__ = [
     "anchor_finding",
     "anchored",
     "check_response",
+    "load_answer",
     "parse_findings",
 ]
 
@@ -149,7 +150,11 @@ def _reject_constant(name: str) -> float:
     raise ValueError(f"{name} is not valid JSON")
 
 
-def _load(text: str) -> Any:
+def load_answer(text: str, what: str = "findings") -> Any:
+    """The JSON value of a model's answer: strict JSON (no ``NaN``), in at most one Markdown fence.
+
+    Raises :class:`FindingsFormatError` when there is none; ``what`` names what the answer should hold.
+    """
     stripped = text.strip()
     # Accept one surrounding Markdown fence (models without structured outputs add them); nothing else.
     if (fenced := _FENCE.match(stripped)) is not None:
@@ -159,7 +164,7 @@ def _load(text: str) -> Any:
     except ValueError as exc:
         raise FindingsFormatError(f"response is not valid JSON: {exc}") from None
     except RecursionError:
-        raise FindingsFormatError("response is JSON nested too deeply to be findings") from None
+        raise FindingsFormatError(f"response is JSON nested too deeply to be {what}") from None
 
 
 def _validate(index: int, item: Any) -> Finding | Rejection:
@@ -209,7 +214,7 @@ def _validate(index: int, item: Any) -> Finding | Rejection:
 
 
 def _items(text: str) -> list[Any]:
-    data = _load(text)
+    data = load_answer(text)
     items = data.get("findings") if isinstance(data, dict) else None
     if not isinstance(items, list):
         raise FindingsFormatError('expected a JSON object with a "findings" array')

@@ -17,6 +17,7 @@ from codelens.providers import Request
 
 __all__ = [
     "DEFAULT_MAX_PROMPT_CHARS",
+    "LINE_BREAKS",
     "MAX_FINDINGS",
     "SYSTEM_PROMPT",
     "ReviewPrompt",
@@ -86,7 +87,7 @@ class ReviewPrompt:
 # Characters other than "\n" that end a line under Unicode rules (str.splitlines). The parser splits only on
 # "\n", so diff content can carry them; shown raw, they would let the diff start a line of its own, such as a
 # fake "</diff>". They are all whitespace to str.split, so showing them as spaces keeps the quote check exact.
-_LINE_BREAKS = str.maketrans(dict.fromkeys("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029", " "))
+LINE_BREAKS = str.maketrans(dict.fromkeys("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029", " "))
 
 
 def unsafe_path(path: str | None) -> bool:
@@ -99,7 +100,7 @@ def render_file(file: FileDiff) -> str:
     note = _STATUS_NOTE[file.status].format(old=file.old_path)
     blocks = [f"File: {file.path} ({note})"]
     blocks.extend(hunk.render_numbered() for hunk in file.hunks)
-    return "\n".join(blocks).translate(_LINE_BREAKS)
+    return "\n".join(blocks).translate(LINE_BREAKS)
 
 
 # Usually machine-written: their diffs are often the largest in a PR and nobody reviews them line by line,
@@ -189,7 +190,7 @@ def render_static(findings: Sequence[Finding], files: Sequence[FileDiff]) -> str
     shown = sorted((f for f in findings if f.path in order), key=lambda f: (order[f.path], f.line, f.rule))
     if not shown:
         return ""
-    items = [f"- {f.path}:{f.line} [{f.rule}] {f.title}".translate(_LINE_BREAKS) for f in shown]
+    items = [f"- {f.path}:{f.line} [{f.rule}] {f.title}".translate(LINE_BREAKS) for f in shown]
     if len(items) > MAX_STATIC_LISTED:
         items = [*items[:MAX_STATIC_LISTED], f"- and {len(items) - MAX_STATIC_LISTED:,} more"]
     return "\n".join(["<static_analysis>", _STATIC_LEAD, *items, "</static_analysis>"]) + "\n"
