@@ -236,53 +236,25 @@ position among identical lines) recognised them at the new line numbers. Each se
 setup and install included. The repository's own lint passes on the demo module: none of the bugs is a
 stable ruff rule.
 
-## Results so far
+## Results
 
-### Test generation (day 4)
-
-On the `stock` sample (`evals/testgen/`: a warehouse module whose PR adds input checks, a safety buffer and
-a new function; the existing suite has two happy-path tests), from a **hand-written** answer: there is no
-API key on this machine, so the 12 candidates were written by hand to exercise every decision the filter
-makes (two tests of new behaviour on old lines, a wrong expectation, a 120 s sleep, an `os._exit(0)`, an
-unknown function, code that doesn't parse). These numbers measure the filter and the accounting, not a
-model.
+Every number here comes from a command in this repository, written next to it. The measurements were re-run
+for v1.0.0 (Apple M3, on battery) and matched what was first reported, except where a row says otherwise;
+"Release check" below has the details. The model's own quality is not measured: see the last subsection.
 
 | What | Result | Reproduce |
 |---|---|---|
-| Candidates kept | 5 of the 10 that ran; 2 more rejected before running | `.venv/bin/codelens testgen evals/testgen/cases/stock/pr.diff --source-root evals/testgen/cases/stock/after --tests tests --recordings evals/testgen/recordings --timeout 5` |
-| Coverage of the changed functions' bodies | 8 of 18 statements (the existing suite) → 17 of 18 (+50.0 points) | same |
-| Of those, on lines the diff adds | 7 of 17 → 16 of 17 | same |
-| Time | 7.4 s wall time (median of 3) on an Apple M3, 5 s of it the candidate that sleeps until its timeout | same, under `time` |
-| A test that leaves a 30 s background process | 0.29 s, the process killed with the run; 30.2 s for the first version, which read the output through a pipe (when the test turns pytest's capture off; with capture on, 0.2 s either way) | `.venv/bin/python scripts/measure_runner_stall.py` |
+| Tests | 666 passing; 99% line + branch coverage | `.venv/bin/pytest --cov` |
+| Static pre-pass on the eval set | 14 findings, all 14 correct (100.0% precision); 14 of 23 seeded bugs (60.9% recall) | `.venv/bin/codelens eval --static-only` |
+| Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
+| Static rules on mature code | 1,330 hits in 128,452 lines of the Python 3.11.12 standard library (10.35 per 1,000); 3.14 per 1,000 outside test files | `.venv/bin/python scripts/measure_static_noise.py` |
+| Static pre-pass time | 3.30 s for those 296 files (median of 3); ruff is 0.04 s of it | same |
+| Static pre-pass on this repository's history | 123 commits: 16 findings, the 14 seeded eval bugs and 2 false positives in tests | `.venv/bin/python scripts/measure_static_history.py` |
+| Real diffs parse | 123 commits, 438 file diffs of this repository: 0 failures | `.venv/bin/python scripts/check_history.py` |
+| Test generation (hand-written answer) | 5 of 10 candidates kept; changed functions' statements covered 8 of 18 → 17 of 18 (+50.0 points); 7.47 s | see "Test generation" |
+| Self-review on a real PR | 3 of 4 seeded bugs posted (the 4th needs a model); on the next push only the new finding, 3 not repeated | [PR #1](https://github.com/vivekdavara/codelens/pull/1) |
 
-Two of the dropped candidates check behaviour the PR added, but on lines the existing suite already ran, so
-line coverage can't tell them from a repeat. Kept tests also pin current behaviour: a test of what buggy
-code should do fails and is dropped. Both are in DESIGN.md's "What it measures, and what it can't", with what
-would do better (branch coverage, mutation testing). `tests/test_testgen_sample.py` pins the numbers.
-
-### Review of the day's work (day 4)
-
-Two review agents read the day's code, one the runner (`sandbox.py`) and one the generator and CLI, and
-reported only what they had reproduced. I reproduced the main claims again before fixing them, and every fix
-has a test that fails on the old code. 17 problems were fixed, the worst first:
-
-- **False passes.** pytest's exit status 0 also means "failed as expected" (xfail), "skipped after running
-  code" and `pytest.exit(returncode=0)`, and the generator kept such tests. A run now passes only if a test
-  passed and none skipped, xfailed, xpassed, failed or errored (counted by a plugin in the child).
-- **Candidates could change each other's verdicts.** They shared a directory, so a `conftest.py` written
-  by one turned the next one's failure into a pass. Each run now gets its own copy and `--noconftest`.
-- **A passing run reported as a timeout**, when a test left a thread running: the child now exits as soon
-  as its report is written.
-- **Crashes after the paid call**: a relative or missing `--python`, and a symlink loop in the checkout,
-  which crashed the day-3 static pre-pass too (`codelens review`).
-- **Wrong coverage accounting**: one-line functions counted as covered by the import, and an edit inside
-  a multi-line statement counted as no changed statement.
-- And: an interrupt left the child running, UTF-8 mode never took effect under `-I`, bytecode landed in
-  the checkout, a checkout path with `[` measured nothing, `src/` as a package got the wrong module name,
-  `tests.py`, `conftest.py` and `test*` functions were targets, a byte-order mark made a file "not parse",
-  and `--out` overwrote files.
-
-### The eval set (day 3)
+### The eval set
 
 14 small pull requests, 12 of them with 23 seeded bugs and 2 clean, described in
 [evals/README.md](evals/README.md). `codelens eval` reviews each one and scores what each source would post:
@@ -302,14 +274,24 @@ fails CI.) What these numbers are worth:
   `self.handlers[topic]` while iterating it, a swallowed timeout, a `None` cache entry dereferenced, tax
   rounded to whole dollars, path traversal, and a timing-unsafe token comparison.
 - **The model rows are empty on purpose.** They need real model answers, and there was no API key on the
-  machine that built this, so no number is claimed; hand-written answers would measure nothing. Recording
-  them is one command (below, "Not measured yet").
+  machine that built this, so no number is claimed; hand-written answers would measure nothing.
 - **The eval changed the design.** Its first run found that a PR making a method `async` turns its
   unchanged `time.sleep()` and `self.flush()` lines into bugs the pre-pass couldn't see, because it only
   read added lines. It now also reports new hits on unchanged lines (DESIGN.md, "Which files, and which
   lines").
 
-### The static rules on mature code (day 3)
+### The quote check
+
+Synthetic edits (seeded insertions, deletions and changed lines) on real code: 300 sampled files of the
+Python 3.11.12 standard library, diffed by git, 5,423 commentable lines. Of the off-by-one and off-by-two
+citations that land inside a hunk, where line anchoring alone would accept them, the quote check rejects
+16,738 of 17,366 (96.4%); off by one alone, 9,046 of 9,396 (96.3%)
+(`scripts/measure_quote_check.py --offsets=-1,1`). The 3.6% it lets through land on a line whose text equals
+the intended one: 438 blank lines, 118 identical lines, 72 where the quote is part of the neighbour. A test
+keeps the rate on this repo's own sources above 90% (95.8%, 596 of 622, at `a220a7f`), so loosening the rule
+fails CI.
+
+### The static rules on mature code
 
 How often each rule fires on 296 files of the Python 3.11.12 standard library (128,452 lines), each
 reviewed as if a PR had added it whole (`.venv/bin/python scripts/measure_static_noise.py`):
@@ -320,76 +302,77 @@ reviewed as if a PR had added it whole (`.venv/bin/python scripts/measure_static
 | test files (80,323 lines) | 1,179 | 14.68 |
 | other files (48,129 lines) | 151 | 3.14 |
 
-The pre-pass on those 296 files took 3.34 s (median of 3 runs, Apple M3; the script prints it): ruff is
-0.04 s of that, and CodeLens's own AST rules most of the rest. Sharing each function's bound names between
-two rules took the rules from 2.92 s to 2.30 s with identical hits on every file.
-
 F841 (unused local) is 1,012 of the hits, 873 of them in one file, `test_exceptions.py`, which assigns
 without reading on purpose; F821 is 127, 93 of them in `turtle.py`, which defines names with `exec`; 37 of
-the 61 rules never fired (numbers after the day's fixes; the first run had 1,331 hits). Most hits on shipped code are deliberate (the standard library calls `eval` and
-`pickle` on purpose), so these are a ceiling on noise, not a false-positive rate. The first run found:
+the 61 rules never fired. Most hits on shipped code are deliberate (the standard library calls `eval` and
+`pickle` on purpose), so these are a ceiling on noise, not a false-positive rate. The first run found two
+real bugs in the standard library (CL004 on `test/support/__init__.py` lines 923 and 2077: error messages
+without the `f` prefix that print `{limit!r}` and `{max_depth}` literally) and two false-positive classes in
+CodeLens's own rules, since fixed with tests. Sharing each function's bound names between two rules took the
+rules from 2.92 s to 2.30 s with identical hits on every file. A test requires 0 hits on CodeLens's own
+sources.
 
-- **two real bugs in the standard library**: CL004 flagged `test/support/__init__.py` lines 923 and 2077,
-  error messages written without the `f` prefix that print `{limit!r}` and `{max_depth}` literally;
-- **two false-positive classes in CodeLens's own rules**, fixed with tests: CL003 on
-  `for cookie in self: self.clear(domain, path, name)` in `http/cookiejar.py` (that's CookieJar's own
-  `clear`, and the jar iterates a snapshot; CL003 now checks arities against the built-in methods), and
-  CL004 on `.replace("{max_findings}", ...)` in CodeLens's own `prompts.py` (search tokens are now skipped).
-  A test requires 0 hits on CodeLens's own sources.
-
-### The static pre-pass on real pull requests (day 3)
+### The static pre-pass on real pull requests
 
 Every non-merge commit of this repository, reviewed as a PR (`git diff C^ C`) against its own tree
-(`.venv/bin/python scripts/measure_static_history.py`, at `d9bfbe5`): 93 commits, 77 touching Python, 245
-Python file diffs, 10,895 added Python lines, **15 findings**. Fourteen are the eval set's seeded bugs, in
-the commit that added the cases (`eb6a818`). The fifteenth is a false positive: S105 ("possible hardcoded
-password") on `TOKEN = "ghs_test_not_a_real_token"` in `tests/test_github.py`. S105 stays, at medium
-severity and confidence 0.5, because a real secret pasted into a test is still a leak. (A run in between,
-after the review fixes, also flagged a CL004 false positive in a test written that day: a string of code
-assigned to a variable its braces named. CL004 now skips that pattern.)
+(`.venv/bin/python scripts/measure_static_history.py`): at v1.0.0's release branch, 123 commits, 99 touching
+Python, 313 Python file diffs, 14,218 added Python lines, **16 findings**. Fourteen are the eval set's seeded
+bugs, in the commit that added the cases (`eb6a818`). Two are false positives, both in tests: S105 ("possible
+hardcoded password") on `TOKEN = "ghs_test_not_a_real_token"` in `tests/test_github.py`, and S605 (a shell
+command built with an f-string) on `os.popen(f"ps -o stat= -p {pid}")` in `tests/test_sandbox.py`, where
+`pid` is the test's own child. Both rules stay: a real secret pasted into a test is still a leak, and a shell
+string built from input usually is an injection. (At day 3, 93 commits gave 15 findings: the same 14 and the
+S105.)
 
-### Review of the day's work (day 3)
+### Test generation
 
-Three review agents read the day-3 diff (static pre-pass and rules; eval harness, CLI and action;
-review, prompt and posting), each confirming its claims by running code; I checked each claim before
-fixing it. 26 problems were fixed, each with a regression test. The worst:
-
-- **A PR could run code in the action.** The pre-pass ran `python -m ruff` in the PR's checkout, where
-  `-m` imports a planted `ruff.py` first; and since day 1 the action's `python -m pip` and
-  `python -c 'import json…'` ran there too. Ruff now runs as a binary, and every `python` in the action
-  runs with `-I`.
-- **A PR could crash the review** with an expression nested a few thousand deep (RecursionError in the
-  parser), **or silence it**: with `# noqa` comments (ruff now runs `--ignore-noqa`), or with a file name
-  containing a fingerprint marker (markers now count only on a line of their own).
-- **Wrong lines and wrong counts**: a lone `\r` shifted every later static finding by a line (such files
-  are now skipped), CRLF files were never checked, an "old" hit was matched by text anywhere in the file
-  instead of at its line, and two findings on one line shared one fingerprint (dedupe is now one per
-  line).
-
-One known gap stays, narrowed: CL003 can't tell whether `d.update(...)` adds a key, so it flags every
-update except one whose only keys are the loop's own (`for k in d: d.update({k: ...})`), which can't.
-
-### Earlier days
+On the `stock` sample (`evals/testgen/`: a warehouse module whose PR adds input checks, a safety buffer and
+a new function; the existing suite has two happy-path tests), from a **hand-written** answer: there is no
+API key on this machine, so the 12 candidates were written by hand to exercise every decision the filter
+makes (two tests of new behaviour on old lines, a wrong expectation, a 120 s sleep, an `os._exit(0)`, an
+unknown function, code that doesn't parse). These numbers measure the filter and the accounting, not a
+model.
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 648 passing | `.venv/bin/pytest` |
-| Pre-pass property tests (day 3) | 120 seeded edits diffed by real git at `-U0`, `-U1` and `-U3`: `old_version` rebuilds every old file exactly (it found one end-of-file case, fixed); 2,000 seeded mutations of real code never crash the CodeLens rules; on random edits every static finding sits on a shown line and quotes it | `.venv/bin/pytest tests/test_old_version.py tests/test_static_fuzz.py` |
-| Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 98% | `.venv/bin/pytest --cov` |
-| Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
-| Real history | every commit of this repository parses and renders: 48 commits, 122 file diffs, 0 failures at `8646d07` (another local clone, 50 Java/SQL/YAML commits: 0 failures) | `.venv/bin/python scripts/check_history.py [repo]` |
-| Differential check against real git (day 1) | 150 seeded random edits: full-context hunks rebuild both files exactly; every line at default context matches its file line | `.venv/bin/pytest tests/test_diff_against_git.py` |
+| Candidates kept | 5 of the 10 that ran; 2 more rejected before running | `.venv/bin/codelens testgen evals/testgen/cases/stock/pr.diff --source-root evals/testgen/cases/stock/after --tests tests --recordings evals/testgen/recordings --timeout 5` |
+| Coverage of the changed functions' bodies | 8 of 18 statements (the existing suite) → 17 of 18 (+50.0 points) | same |
+| Of those, on lines the diff adds | 7 of 17 → 16 of 17 | same |
+| Time | 7.47 s wall time in each of 3 runs (`/usr/bin/time -p`), 5 s of it the candidate that sleeps until its timeout | same, under `time` |
+| A test that leaves a 30 s background process | 0.30 s for the runner, the process killed with the run; 30.2 s for the first version, which read the output through a pipe (when the test turns pytest's capture off; with capture on, 0.1 s) | `.venv/bin/python scripts/measure_runner_stall.py` |
+
+Two of the dropped candidates check behaviour the PR added, but on lines the existing suite already ran, so
+line coverage can't tell them from a repeat. Kept tests also pin current behaviour: a test of what buggy
+code should do fails and is dropped. Both are in DESIGN.md's "What it measures, and what it can't", with what
+would do better (branch coverage, mutation testing). `tests/test_testgen_sample.py` pins the numbers.
+
+### Other checks
+
+| What | Result | Reproduce |
+|---|---|---|
+| Differential check against real git | 150 seeded random edits: full-context hunks rebuild both files exactly; every line at default context matches its file line | `.venv/bin/pytest tests/test_diff_against_git.py` |
+| Pre-pass property tests | 120 seeded edits diffed by real git at `-U0`, `-U1` and `-U3`: `old_version` rebuilds every old file exactly (it found one end-of-file case, fixed); 2,000 seeded mutations of real code never crash the CodeLens rules; on random edits every static finding sits on a shown line and quotes it | `.venv/bin/pytest tests/test_old_version.py tests/test_static_fuzz.py` |
 | Fuzzing the untrusted parsers | 1,500 seeded rounds each of random and mutated JSON for findings, both vendors' responses, error bodies and recordings: only documented errors raised; found one bug (negative token counts), fixed | `.venv/bin/pytest tests/test_fuzz.py` |
-| The action, end to end | CI job `action-review` runs a full review of the sample PR through `action.yml` from its recording and checks 3 findings kept, 1 rejected; `action-static` reviews an eval case with the pre-pass and checks 2 findings, 1 static | `.github/workflows/ci.yml` |
+| The action, end to end | CI job `action-review` runs a full review of the sample PR through `action.yml` from its recording and checks 3 findings kept, 1 rejected; `action-static` reviews an eval case with the pre-pass and checks 2 findings, 1 static; `self-review` reviews each PR to this repository | `.github/workflows/ci.yml` |
+| The action's shell | the Review step's script, run under bash with `codelens` stubbed: every skip, the posting arguments, forks, the static fallback | `.venv/bin/pytest tests/test_action.py` |
 
-The quote-check measurement uses synthetic edits (seeded insertions, deletions and changed lines) on real
-code: 300 sampled files of the Python 3.11.12 standard library, diffed by git, 5,423 commentable lines. The
-3.6% it lets through land on a line whose text equals the intended one (438 blank lines, 118 identical lines,
-72 where the quote is part of the neighbour). Off-by-one alone: 9,046 of 9,396 (96.3%)
-(`scripts/measure_quote_check.py --offsets=-1,1`). A test keeps the rate on this repo's own sources above 90%
-(95.8%, 596 of 622, at `a220a7f`), so loosening the rule fails CI.
+### Release check
 
-### Not measured yet
+For v1.0.0 every measurement above was re-run: the eval, the quote check (both offsets), the noise and history
+scripts, the test-generation sample (three times) and the stall script, at `b2c401a` (the release branch,
+whose code is `main`'s), then the stall script again at `e9dc23b`. They match the first reports, except:
+
+- **The stall script had stopped measuring.** It reported the old pipe runner returning in 0.1 s with
+  capture off, against 30.2 s at day 4. It reuses the sandbox's bootstrap, which a day-4 review fix
+  (`e3c0c24`) made read two more keys; the script never passed them, so its child died before starting the
+  sleeper, and a fast "return" looked like no stall. Fixed (`e9dc23b`); it reproduces 30.2 s, and a test now
+  runs it.
+- **Timings moved slightly**: the pre-pass 3.34 → 3.30 s, the test-generation sample 7.4 → 7.47 s, the
+  runner with a background process 0.29 → 0.30 s.
+- **The history grew**: 93 → 123 commits and 15 → 16 findings (S605, above); 48 → 123 commits parsed, still
+  0 failures.
+
+### Not measured: the model
 
 The model's review quality. With a key, one command records a real answer for every eval case (14 calls) and
 prints all three rows:
@@ -398,10 +381,37 @@ prints all three rows:
 ANTHROPIC_API_KEY=... .venv/bin/codelens eval --provider anthropic --record
 ```
 
-The answers land in `evals/recordings/`, after which plain `codelens eval` (and CI) replays them.
+The answers land in `evals/recordings/`, after which plain `codelens eval` (and CI) replays them. The model's
+test writing, the same way: one call records a real answer for the test-generation sample (the command is in
+`evals/testgen/README.md`), and the report then measures a model instead of the filter.
 
-The model's test writing, the same way: one call records a real answer for the test-generation sample
-(the command is in `evals/testgen/README.md`), and the report then measures a model instead of the filter.
+## What reviewing CodeLens found
+
+After each day's core was done, independent review agents read that day's diff and reported only what they
+could reproduce; I reproduced each claim again before fixing it, and every fix has a test that fails on the
+old code. Day 2: 22 candidates, 21 confirmed and 1 plausible, all fixed. Day 3: 26 fixed. Day 4: 17 fixed.
+Day 5's own checks found two more. The ones worth knowing:
+
+- **A PR could run code in the action** (day 3). The pre-pass ran `python -m ruff` in the PR's checkout,
+  where `-m` imports a planted `ruff.py` first, with the job's API key in the environment; and since day 1
+  the action's `python -m pip` and `python -c 'import json…'` ran there too. Ruff now runs as a binary, and
+  every `python` in the action runs with `-I`, which a test enforces.
+- **The CI job would have posted the sample fixture's findings onto real PRs** (day 2), and **the cap was
+  applied before the already-posted filter**, so new findings could be starved forever.
+- **Anyone could silence CodeLens**: by forging its hidden markers (day 2; only CodeLens's own comments
+  count now), with `# noqa` comments (day 3; ruff runs `--ignore-noqa`), or with a file name carrying a
+  marker (day 3; markers count only on a line of their own).
+- **Exit status 0 counted as a pass** (day 4). pytest also exits 0 for an expected failure, a test that skips
+  after running code, and `pytest.exit(returncode=0)`, so failing tests were kept. A plugin in the child now
+  counts each test's outcome.
+- **Candidates could change each other's verdicts** (day 4): they shared a directory, so a `conftest.py`
+  written by one turned the next one's failure into a pass. Each run gets its own copy and `--noconftest`.
+- **Crashes after the paid call**: a non-UTF-8 diff byte in fingerprinting and `--record` (day 2), and a
+  relative `--python` or a symlink loop in the checkout (day 4).
+- **A recording committed to a PR could never replay** (day 5): committing it changed the diff, and so the
+  prompt it answered. Recordings are no longer reviewed.
+- **Every fork's PR would have failed the self-review job** (day 5), posting with a read-only token. The
+  action doesn't post there now.
 
 ## Develop
 
@@ -435,6 +445,35 @@ that fails tells you the command).
   a binary so nothing in the checkout is imported.
 - **Report what the PR introduced.** Added lines, plus unchanged lines it made wrong; never what was already
   there.
+- **Without a model, post what can be checked, and say so.** On a new PR with no key, the review is the
+  static findings alone, and its headline says no model reviewed the diff. The fallback is opt-in and covers
+  only a missing recording, so CI that expects a recording still fails loudly when the prompt changes.
+- **A reviewer reviews its own changes.** Every PR to this repository is reviewed by the PR's own version
+  of the action, so a change that breaks the action, or the posting path, fails on its own PR.
+
+## Limitations
+
+- **The model's quality is unmeasured.** There was no API key on the machine that built CodeLens, so every
+  recording in the repository is hand-written and labelled `"model": "hand-written"`, the eval's model rows
+  are empty, and the test-generation numbers measure the filter. One command each records the real ones
+  ("Not measured: the model").
+- **The vendor APIs were never called.** The Anthropic and OpenAI providers are tested against a local
+  server that follows the documented request and response shapes. The GitHub side has run for real (PR #1).
+- **Without a key, the self-review is static analysis alone**, and a recording answers one exact diff, so
+  each push needs a new recording, or the repository secret for live reviews.
+- **Python only** for the static pre-pass and test generation; the model reviews any text file.
+- **The static rules are narrow**, and their eval recall (60.9%) is an upper bound: the same author wrote the
+  rules and the cases. CL003 can't tell whether `d.update(...)` adds a key, so it flags every update except
+  one whose only keys are the loop's own.
+- **Test generation keeps passing tests that add line coverage.** It can't keep a test of new behaviour on
+  lines the suite already ran, it never keeps a test that exposes a bug, it targets top-level functions only,
+  and the action doesn't run it (that needs the model call and the test runs in separate steps, so PR code
+  never runs where the key is).
+- **Every run reviews the whole PR diff** and relies on fingerprints not to repeat comments; a re-run on an
+  already-reviewed head still pays for one model call. Removed lines are flagged on the nearest remaining
+  line. A file over the 200,000-character prompt budget is skipped whole.
+- **Posting is never retried**: a timeout after GitHub accepted a review reports a failure, and a retry could
+  post it twice.
 
 More in [DESIGN.md](DESIGN.md); interview questions and answers in [WALKTHROUGH.md](WALKTHROUGH.md).
 
