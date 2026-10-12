@@ -256,7 +256,7 @@ for v1.0.0 (Apple M3, on battery) and matched what was first reported, except wh
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 666 passing; 99% line + branch coverage | `.venv/bin/pytest --cov` |
+| Tests | 679 passing; 99% line + branch coverage (every module 100% except the day-1 parser, `diff.py`, at 98%) | `.venv/bin/pytest --cov` |
 | Static pre-pass on the eval set | 14 findings, all 14 correct (100.0% precision); 14 of 23 seeded bugs (60.9% recall) | `.venv/bin/codelens eval --static-only` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
 | Static rules on mature code | 1,330 hits in 128,452 lines of the Python 3.11.12 standard library (10.35 per 1,000); 3.14 per 1,000 outside test files | `.venv/bin/python scripts/measure_static_noise.py` |

@@ -410,7 +410,7 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 669 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 679 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
