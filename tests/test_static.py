@@ -471,3 +471,11 @@ def test_line_numbers_in_messages_do_not_make_an_old_hit_new(tmp_path: Path) -> 
     after = "import sys\n" + before  # now on line 4: "... from line 2"
     result = run(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path)
     assert result.findings == [] and result.existing == 1
+
+
+def test_a_symlink_loop_in_the_checkout_is_skipped_not_a_crash(tmp_path: Path) -> None:
+    # The diff adds pkg/mod.py, but in the checkout pkg is a link to itself: resolve() raises RuntimeError.
+    (tmp_path / "pkg").symlink_to("pkg")
+    diff = "diff --git a/pkg/mod.py b/pkg/mod.py\nnew file mode 100644\n--- /dev/null\n+++ b/pkg/mod.py\n"
+    patch = parse_patch(diff + "@@ -0,0 +1 @@\n+x = 1\n")
+    assert run(patch, tmp_path).skipped == [("pkg/mod.py", "symlink")]

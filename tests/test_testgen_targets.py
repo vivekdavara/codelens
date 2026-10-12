@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from test_static import make_pr
 
+from codelens.diff import parse_patch
 from codelens.testgen import find_targets, module_name
 
 BEFORE = """\
@@ -182,3 +183,10 @@ def test_a_byte_order_mark_does_not_stop_a_file_parsing(tmp_path: Path) -> None:
     found = find_targets(make_pr(tmp_path, {}, {"bom.py": "\ufeffdef f():\n    return 1\n"}), tmp_path)
     assert [t.qualname for t in found.targets] == ["bom.f"]
     assert found.sources["bom.py"][0] == "def f():"
+
+
+def test_a_symlink_loop_in_the_checkout_is_skipped(tmp_path: Path) -> None:
+    (tmp_path / "pkg").symlink_to("pkg")
+    diff = "diff --git a/pkg/mod.py b/pkg/mod.py\nnew file mode 100644\n--- /dev/null\n+++ b/pkg/mod.py\n"
+    found = find_targets(parse_patch(diff + "@@ -0,0 +1,2 @@\n+def f():\n+    return 1\n"), tmp_path)
+    assert found.targets == [] and found.skipped == [("pkg/mod.py", "symlink")]
