@@ -94,8 +94,12 @@ tests/test_orders.py:7  low  test  No test for an unknown code or for pagination
 3 findings on 2 reviewed files (recorded: hand-written, 0 input / 0 output tokens)
 dropped 1: misquoted 1
   [2] misquoted: shop/orders.py:16 is 'return round(total, 2)', not 'total -= total * DISCOUNTS[code]'
+not checked by static analysis: shop/orders.py (not found in .)
+not checked by static analysis: tests/test_orders.py (not found in .)
 dry run: nothing posted (pass --post to post the review)
 ```
+
+(The sample's files aren't checked out in this repository, so the pre-pass skips them and says why.)
 
 That recording is **hand-written** test data (its third answer is a deliberate off-by-one citation, to show
 the quote check dropping it); it is not model output. `--json` prints the same as JSON plus the exact Reviews
