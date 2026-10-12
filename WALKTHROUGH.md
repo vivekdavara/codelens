@@ -304,8 +304,9 @@ the measured numbers and the correction. Lesson: measure the mechanism before wr
 ## Self-review and the release (day 5)
 
 **How does CodeLens review its own pull requests without a key?** The `self-review` job in `ci.yml` runs
-the PR's own version of the action (`uses: ./`) on every pull request, checked out at the PR's head commit,
-with `provider: recorded`, `recordings: .codelens/recordings` and `missing-recording: static`. A new PR has
+the PR's own version of the action (`uses: ./`, from the merge commit) on every pull request, with the PR's
+head checked out in `.pr-head` as the source root, `provider: recorded`, recordings from the head's
+`.codelens/recordings`, and `missing-recording: static`. A new PR has
 no recording, because a recording answers one exact prompt, so `review.review` catches that
 `RecordingMissing` and the review is the static findings alone, with `Review.unrecorded` naming the
 recording that would have answered. The findings are posted like any review. With an `ANTHROPIC_API_KEY`
@@ -349,6 +350,16 @@ recording flow for real: I wrote an answer naming the off-by-one by hand, record
 (the key the second review had named as missing), and committed it to the PR. CI replayed it and posted that
 one finding, "hand-written" in the headline, with the recording listed as not reviewed. That proves the
 mechanism on GitHub; a hand-written answer says nothing about a model. The jobs took 13–19 s.
+
+**Why two checkouts in one job?** A second review agent caught this. My first version checked out the PR's
+head and ran `uses: ./`. But on `pull_request` the workflow file comes from the merge commit, so the job
+fed one commit's inputs to another commit's `action.yml`. On a branch cut before `missing-recording`
+existed, the old action would ignore that input and fail on the recording miss, and a fork's old branch
+would still try to post. Nothing had hit it yet: both open PRs were cut after the change. Now the action
+runs from the merge commit, the same commit as the workflow, and the head goes in `.pr-head` for the
+pre-pass, which must read the PR's own lines. The same review also had me compare repository ids rather
+than names for the fork rule, and reject a bad `missing-recording` value up front: argparse never saw it
+when the review skipped first.
 
 **The job runs the PR's own action with a write token. Isn't that dangerous?** On a pull request from a
 branch of this repository, the token is the job's (`contents: read`, `pull-requests: write`) and the PR's

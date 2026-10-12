@@ -597,9 +597,12 @@ the two belong in separate steps or jobs. The action doesn't run test generation
 ## Self-review (day 5)
 
 CodeLens reviews its own pull requests: the `self-review` job in `ci.yml` runs on every `pull_request` to
-this repository, with the PR's own version of the action (`uses: ./`), checked out at the PR's head commit
-so the static pre-pass reads the PR's files, and `pull-requests: write` to post. Three things make that
-work without a key.
+this repository, with `pull-requests: write` to post. It checks out twice. The action (`uses: ./`) runs from
+the default checkout, the merge commit, which is also the commit the workflow file comes from, so the
+inputs the workflow passes always match the `action.yml` that reads them, whatever the age of the PR's
+branch. The PR's head is checked out in `.pr-head`: it is the source root, because the static pre-pass must
+read the PR's own lines, and it holds the recordings, because that is where a PR commits one. Three things
+make it work without a key.
 
 **A static-only fallback.** A recording answers one exact prompt, so a new PR never has one, and the
 recorded provider raises `RecordingMissing`. With `static_if_unrecorded` (CLI `--missing-recording static`,
@@ -627,12 +630,14 @@ prompt the review sends. Any change to the PR's code still changes the prompt an
 that is the point of keying on the prompt.
 
 **The job's provider.** `provider` is `anthropic` when the repository has an `ANTHROPIC_API_KEY` secret and
-`recorded` otherwise, with `recordings: .codelens/recordings` and `missing-recording: static`. So the default
+`recorded` otherwise, with `recordings: .pr-head/.codelens/recordings` and `missing-recording: static`. So the default
 is a replayed or static-only review at no cost, and adding the secret makes every push one live call.
 
 Trust: on a PR from a branch of this repository, the author already has write access, so running their
 version of the action with a write token gives them nothing new. On a fork's PR, `pull_request` gives the job
-a read-only token and no secrets, and the action doesn't try to post. `pull_request_target` is never used.
+a read-only token and no secrets, and the action doesn't try to post: it compares the head and base
+repository ids (not names, which change case and get renamed), and a deleted fork has no head repository.
+`pull_request_target` is never used.
 
 The first run against the real API (demo PR #1, seeded bugs, never merged): one review, three line
 comments, pinned to the head commit; after a push that moved those lines down nine, one review with only the

@@ -217,8 +217,9 @@ landed by the time the diff is fetched, the review is skipped and that push's ru
 ## CodeLens reviews its own pull requests
 
 The `self-review` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request
-to this repository. It uses the PR's own version of the action, checked out at the PR's head commit, so a
-change that breaks the action fails its own review. There is no API key by default:
+to this repository. It runs the action from the PR's merge commit, the commit the workflow itself comes
+from, so a change that breaks the action fails its own review; the PR's head is checked out beside it for
+the static pre-pass and the recordings. There is no API key by default:
 
 - **A recording committed under [`.codelens/recordings/`](.codelens/recordings/README.md)** that answers the
   PR's diff is replayed. CodeLens never reviews the recordings in that directory (`<key>.json` files), so
@@ -426,6 +427,9 @@ ones worth knowing:
   prompt it answered. Recordings are no longer reviewed.
 - **Every fork's PR would have failed the self-review job** (day 5), posting with a read-only token. The
   action doesn't post there now.
+- **The self-review ran one commit's action with another commit's inputs** (day 5): it checked out the PR's
+  head and ran `uses: ./`, while the workflow's inputs came from the merge commit, so a branch cut before
+  today would have failed its own review. The action now runs from the merge commit.
 - **A PR could hide its code from the review with a symlink** (day 5): with `.codelens/recordings` a symlink
   to `../svc`, the recordings exclusion followed it and left `svc/pay.py` out as "a CodeLens recording",
   finding and all; a symlink loop there crashed the review. The path is now worked out from names alone, and
@@ -466,8 +470,9 @@ that fails tells you the command).
 - **Without a model, post what can be checked, and say so.** On a new PR with no key, the review is the
   static findings alone, and its headline says no model reviewed the diff. The fallback is opt-in and covers
   only a missing recording, so CI that expects a recording still fails loudly when the prompt changes.
-- **A reviewer reviews its own changes.** Every PR to this repository is reviewed by the PR's own version
-  of the action, so a change that breaks the action, or the posting path, fails on its own PR.
+- **A reviewer reviews its own changes.** Every PR to this repository is reviewed by its own version of the
+  action (from the merge commit), so a change that breaks the action, or the posting path, fails on its own
+  PR.
 
 ## Limitations
 
