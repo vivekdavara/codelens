@@ -630,8 +630,10 @@ a read-only token and no secrets, and the action doesn't try to post. `pull_requ
 
 The first run against the real API (demo PR #1, seeded bugs, never merged): one review, three line
 comments, pinned to the head commit; after a push that moved those lines down nine, one review with only the
-new finding and "Not repeated: 3 findings", the fingerprints matching at the new line numbers. Until then,
-posting had run only against a local fake of the documented API.
+new finding and "Not repeated: 3 findings", the fingerprints matching at the new line numbers. A third push
+committed a hand-written recording keyed on the diff before that commit; CI replayed it and posted its one
+finding, with the recording listed as not reviewed. Until then, posting had run only against a local fake of
+the documented API.
 
 ## Decisions and trade-offs
 

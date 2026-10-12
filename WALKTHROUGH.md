@@ -333,7 +333,11 @@ real run posted one review with three line comments, pinned to the head commit. 
 *above* the others, moving them down nine lines: GitHub moved the old comments to their new lines,
 CodeLens's fingerprints (file, line text, position among identical lines, not the line number) recognised
 all three, and it posted only the new finding with "Not repeated: 3 findings". The seeded off-by-one in
-`batches` was missed both times, which is what a review without a model should miss. Both jobs took 13–19 s.
+`batches` was missed both times, which is what a review without a model should miss. Then I tried the
+recording flow for real: I wrote an answer naming the off-by-one by hand, recorded it against the PR's diff
+(the key the second review had named as missing), and committed it to the PR. CI replayed it and posted that
+one finding, "hand-written" in the headline, with the recording listed as not reviewed. That proves the
+mechanism on GitHub; a hand-written answer says nothing about a model. The jobs took 13–19 s.
 
 **The job runs the PR's own action with a write token. Isn't that dangerous?** On a pull request from a
 branch of this repository, the token is the job's (`contents: read`, `pull-requests: write`) and the PR's
@@ -384,14 +388,17 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 648 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 669 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
 negative token counts passing through); `scripts/check_history.py`, which parses every commit of a real
-repository (0 failures on this one's 48 commits at `8646d07` and on another clone's 50 Java/SQL/YAML commits); two CI
-jobs that run full reviews through `action.yml` (the sample PR, and an eval case with the static pre-pass);
-and the eval set, whose static numbers are pinned by a test. Day 4's runner is tested with real child
+repository (0 failures on this one's 132 commits at v1.0.0's release branch, and on another clone's 50
+Java/SQL/YAML commits); CI jobs that run full reviews through `action.yml` (the sample PR, an eval case with
+the static pre-pass, and every PR to this repository); and the eval set, whose static numbers are pinned by
+a test. Day 5 added tests that run the action's shell under bash, tests that compare the README's example
+output with what the commands print (`tests/test_readme.py`), and one that keeps a measurement script
+measuring (`tests/test_measure_runner_stall.py`). Day 4's runner is tested with real child
 processes (`tests/test_sandbox.py`: a hang, an early exit, a background child, planted `coverage.py` and
 `pytest.py`, secrets in the parent's environment), and the test-generation sample's numbers are pinned by
 `tests/test_testgen_sample.py`.
