@@ -4,16 +4,30 @@ An LLM pull-request reviewer and test generator that runs as a GitHub Action. It
 on the lines a PR changed, grounded by static analysis, and proposes pytest tests for changed Python functions,
 keeping only the ones that pass and add coverage.
 
-**Status: day 4 of 5.** Built so far: the unified-diff parser every comment is anchored through (day 1); the
-review engine (day 2): a provider interface with a recorded provider by default and opt-in Anthropic and
-OpenAI providers, a findings schema with strict validation and quote-checked anchoring, one-review posting
-to GitHub with a dry run, and the action's review step; (day 3) a static pre-pass (ruff plus four rules of
-CodeLens's own) whose findings are posted and shown to the model, one dedupe rule across both sources, and
-an eval set of 14 pull requests with seeded bugs scored by `codelens eval`; and (day 4) test generation:
-`codelens testgen` asks for pytest tests of the changed top-level functions, runs each in a child process
-with an allow-listed environment and a timeout, and keeps the ones that pass and run lines of a changed
-function nothing else ran. CodeLens reviewing its own PRs and the v1.0.0 release (day 5) are next. See
-[DESIGN.md](DESIGN.md) for the whole plan.
+**Status: v1.0.0.** What's in it:
+
+- **A strict unified-diff parser** that every comment is anchored through (`diff.py`), tested against real
+  git on random edits.
+- **A review engine**: one model call per PR, recorded by default and Anthropic or OpenAI when opted in, a
+  findings schema with strict validation, and anchoring that drops a finding unless its line is in the diff
+  and it quotes that line.
+- **A static pre-pass**: ruff plus four rules of CodeLens's own, run on the PR's checkout. Its findings are
+  posted and shown to the model as facts.
+- **An eval set** of 14 pull requests with 23 seeded bugs, scored by `codelens eval`.
+- **Test generation**: `codelens testgen` asks for pytest tests of the changed functions, runs each in a
+  scrubbed child process, and keeps the ones that pass and run changed lines nothing else ran.
+- **Self-review**: CodeLens reviews its own pull requests in CI, with no key by default
+  ([below](#codelens-reviews-its-own-pull-requests)).
+
+See [DESIGN.md](DESIGN.md) for the design and [WALKTHROUGH.md](WALKTHROUGH.md) for questions and answers
+about it.
+
+## Why
+
+Calling a model is the easy part. A review bot is worth installing only if every comment lands on the line
+it talks about, CI can run it without a key and get the same answer every time, and the pull request it
+reviews can't steer it or run code in it. Most of CodeLens is about those three things: a strict parser and a
+quote check, a recorded provider keyed by a hash of the prompt, and treating the diff as untrusted input.
 
 ## How it works
 
@@ -168,24 +182,59 @@ jobs:
       pull-requests: write  # to post the review
     steps:
       - uses: actions/checkout@v7
-      - uses: vivekdavara/codelens@main
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}  # the static pre-pass reads the PR's own files
+      - uses: vivekdavara/codelens@v1.0.0
         with:
           provider: anthropic
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `post` (default `"true"`),
+Without a key, `provider: recorded` with `missing-recording: static` posts the static pre-pass's findings
+alone, which is how CodeLens reviews its own pull requests (next section).
+
+Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `missing-recording` (default
+`fail`; `static` reviews with static analysis alone when no recording answers the diff), `post` (default
+`"true"`),
 `max-findings` (default 10), `max-prompt-chars` (default 200000), `min-severity` (default `low`, keep
 everything; `medium` leaves out the minor ones), `static` (default `"true"`),
 `source-root` (default the workspace), `diff-file`, `github-token`, `python-version`. Outputs: `files`,
 `findings`, `rejected`, `static` (how many of the findings came from the pre-pass), `diff-file`. On
 `pull_request`, `actions/checkout` checks out the merge commit by default; files the base branch also
-changed then differ from the PR's diff and are skipped by the pre-pass, so for every file to be checked use
-`ref: ${{ github.event.pull_request.head.sha }}`. The review
+changed then differ from the PR's diff and are skipped by the pre-pass, hence the `ref` above. The review
 always goes to the job summary. On a fork's PR there are no secrets, so the review is skipped with a notice
 rather than failing the job; the same happens for the recorded provider without `recordings`. Only a review
 of the PR's own diff is ever posted (never of a `diff-file`), pinned to the event's head commit; if a newer
 push has landed by the time the diff is fetched, the review is skipped and that push's run reviews it.
+
+## CodeLens reviews its own pull requests
+
+The `self-review` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request
+to this repository. It uses the PR's own version of the action, checked out at the PR's head commit, so a
+change that breaks the action fails its own review. There is no API key by default:
+
+- **A recording committed under [`.codelens/recordings/`](.codelens/recordings/README.md)** that answers the
+  PR's diff is replayed. CodeLens never reviews that directory, so committing a recording to the PR doesn't
+  change the prompt it answers (`tests/test_cli_review.py`,
+  `test_a_recording_committed_to_the_pr_still_replays`).
+- **Otherwise the review is static analysis alone** (`missing-recording: static`). The findings are posted
+  as line comments, and the summary says that no model reviewed the diff and which recording would have
+  answered.
+- **With an `ANTHROPIC_API_KEY` repository secret** the job reviews live instead, one model call per push.
+
+[Pull request #1](https://github.com/vivekdavara/codelens/pull/1) is the demonstration: a module with seeded
+bugs, never merged. These are the two reviews `github-actions[bot]` posted there, on the first run of
+CodeLens's posting code against the real GitHub API:
+
+| Push | Seeded bugs in the diff | Posted | Not posted |
+|---|---|---|---|
+| 1 (`d76c2fc`) | 4: CL001, CL003 and CL004 bugs, and a batching off-by-one that no rule targets | 3 line comments: the three rule bugs | the off-by-one, which needs a model |
+| 2 (`795abb0`), a fifth bug added above the others, moving them down 9 lines | 5 | 1 line comment: the new CL002 bug | the three already posted ("Not repeated: 3 findings an earlier CodeLens review already posted"), and the off-by-one |
+
+GitHub moved the first review's comments to their new lines, and CodeLens's fingerprints (file, line text,
+position among identical lines) recognised them at the new line numbers. Each self-review job took 13–19 s,
+setup and install included. The repository's own lint passes on the demo module: none of the bugs is a
+stable ruff rule.
 
 ## Results so far
 
