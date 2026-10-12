@@ -26,7 +26,7 @@ from codelens.findings import FindingsFormatError, Severity
 from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, review_payload, summary_body
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
-from codelens.review import Review, review
+from codelens.review import RECORDING, Review, review, split_recordings
 from codelens.sandbox import DEFAULT_TIMEOUT, interpreter
 from codelens.static import StaticResult, analyse, find_ruff
 from codelens.testgen import MAX_TESTS, TestgenResult, describe, generate, kept_files
@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     prompt.add_argument("file", nargs="?", default="-", help="diff file to read ('-' or omitted: stdin)")
     prompt.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
     prompt.add_argument("--max-findings", type=positive_int, default=MAX_FINDINGS)
+    prompt.add_argument(
+        "--recordings",
+        type=Path,
+        help="recordings directory: recordings in the diff are left out, as review leaves them out "
+        "(default: .codelens/recordings)",
+    )
     add_static_arguments(prompt)
 
     static = sub.add_parser("static", help="run only the static pre-pass on the Python lines a diff adds")
@@ -272,10 +278,12 @@ def run_prompt(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         return 1
     pre = run_static_pass(args, patch)
     findings = pre.findings if pre is not None else []
-    prompt = build_prompt(patch, args.max_prompt_chars, args.max_findings, static=findings)
+    # The prompt review would send: without the recordings in the diff.
+    shown, own = split_recordings(patch, path_in_diff(recordings_dir(args), args.source_root))
+    prompt = build_prompt(shown, args.max_prompt_chars, args.max_findings, static=findings)
     out.write(f"=== system ===\n{prompt.request.system}\n=== user ===\n{prompt.request.prompt}")
     out.write(f"=== key {prompt.request.key()} ===\n")
-    for path, reason in prompt.skipped:
+    for path, reason in [(path, RECORDING) for path in own] + prompt.skipped:
         print(f"skipped {path}: {reason}", file=err)
     for line in static_lines(pre):
         print(line, file=err)
@@ -328,9 +336,11 @@ def print_review(result: Review, out: TextIO) -> None:
         )
     n, files = len(result.findings), len(result.reviewed)
     if result.unrecorded is not None:
+        missing = f"no recorded answer for this diff (expected {result.unrecorded}.json)"
         print(
-            f"{plural(n, 'finding')} from static analysis only: no recorded answer for this diff "
-            f"(expected {result.unrecorded}.json), so no model call was made",
+            f"nothing reviewed: {missing}, and static analysis was off"
+            if result.static is None
+            else f"{plural(n, 'finding')} from static analysis only: {missing}, so no model call was made",
             file=out,
         )
     elif not result.reviewed:
@@ -374,18 +384,28 @@ def recordings_dir(args: argparse.Namespace) -> Path:
 
 
 def path_in_diff(directory: Path, source_root: Path) -> str | None:
-    """``directory`` as a path in the diff (relative to the checkout), or ``None`` when it's outside it."""
-    try:
-        relative = directory.resolve().relative_to(source_root.resolve()).as_posix()
-    except ValueError:
+    """``directory`` as a path in the diff (relative to the checkout), or ``None`` when it's outside it.
+
+    Worked out from the names alone, never by following symlinks: in the action the checkout is the PR's, and
+    a symlink there must not decide which of its files go unreviewed (nor crash the review with a loop).
+    """
+    relative = os.path.relpath(os.path.abspath(directory), os.path.abspath(source_root))
+    if relative in (".", os.pardir) or relative.startswith(os.pardir + os.sep):
         return None
-    return relative if relative != "." else None
+    return Path(relative).as_posix()
 
 
 def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
     if args.post and (not repo or args.pr is None):
         print("codelens: --post needs --repo (or $GITHUB_REPOSITORY) and --pr", file=err)
+        return 2
+    if args.no_static and args.missing_recording == "static":
+        # It would review nothing and say "0 findings": refuse the contradiction instead.
+        print(
+            "codelens: --missing-recording static falls back on the static pre-pass: drop --no-static",
+            file=err,
+        )
         return 2
     patch = read_patch(args.file, err)
     if patch is None:

@@ -571,3 +571,85 @@ def test_a_recording_committed_to_the_pr_still_replays(
         capsys, "review", str(diff), "--source-root", str(head / "svc"), "--recordings", str(recordings)
     )
     assert code == 1 and "no recorded response" in err
+
+
+def test_path_in_diff_works_from_names_and_never_follows_symlinks(tmp_path: Path) -> None:
+    from codelens.cli import path_in_diff
+
+    root = tmp_path / "head"
+    (root / ".codelens").mkdir(parents=True)
+    (root / "svc").mkdir()
+    assert path_in_diff(root / ".codelens" / "recordings", root) == ".codelens/recordings"
+    assert path_in_diff(root / "a" / ".." / "recs", root) == "recs"
+    assert path_in_diff(tmp_path / "elsewhere", root) is None  # outside the checkout: nothing to leave out
+    assert path_in_diff(root, root) is None
+    # A symlink in the checkout (the PR's, in the action) decides nothing, and a loop doesn't crash.
+    (root / ".codelens" / "recordings").symlink_to("../svc")
+    assert path_in_diff(root / ".codelens" / "recordings", root) == ".codelens/recordings"
+    (root / "loop").symlink_to("loop")
+    assert path_in_diff(root / "loop", root) == "loop"
+
+
+def test_a_symlinked_recordings_directory_hides_nothing_and_crashes_nothing(
+    capsys: pytest.CaptureFixture[str], unrecorded: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The PR's checkout makes .codelens/recordings a symlink to its own code, or to itself. Following it
+    # left svc/pay.py out as "a CodeLens recording", with its finding; the loop was a RuntimeError.
+    diff, head = unrecorded
+    (head / ".codelens").mkdir()
+    monkeypatch.chdir(head)
+    for target in ("../svc", "recordings"):
+        link = head / ".codelens" / "recordings"
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        code, out, _ = run(capsys, "review", str(diff), "--missing-recording", "static")
+        assert code == 0, target
+        assert out.splitlines()[0].startswith("svc/pay.py:3  medium  bug  The string uses `{net}`")
+        assert "a CodeLens recording" not in out
+
+
+def test_missing_recording_static_needs_the_static_pre_pass(
+    capsys: pytest.CaptureFixture[str], diff_file: Path, tmp_path: Path
+) -> None:
+    code, _, err = run(
+        capsys,
+        "review",
+        str(diff_file),
+        "--no-static",
+        "--missing-recording",
+        "static",
+        "--recordings",
+        str(tmp_path),
+    )
+    assert code == 2 and "drop --no-static" in err
+
+
+def test_prompt_shows_the_key_review_looks_up_when_the_diff_holds_a_recording(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    head = tmp_path / "head"
+    recordings = head / ".codelens" / "recordings"
+    name = f".codelens/recordings/{'ab' * 32}.json"
+    diff = tmp_path / "pr.diff"
+    diff.write_text(
+        DIFF + f"diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n"
+        "@@ -0,0 +1 @@\n+{}\n"
+    )
+    common = ("--source-root", str(head), "--recordings", str(recordings))
+    code, out, err = run(capsys, "prompt", str(diff), *common)
+    assert code == 0 and f"skipped {name}: a CodeLens recording" in err and name not in out
+    key = out.rsplit("=== key ", 1)[1].split(" ===")[0]
+    code, out, _ = run(capsys, "review", str(diff), *common, "--missing-recording", "static", "--json")
+    assert code == 0 and json.loads(out)["unrecorded"] == key == build_prompt(parse_patch(DIFF)).request.key()
+
+
+def test_the_static_off_headline_says_nothing_was_reviewed() -> None:
+    from codelens.cli import print_review
+    from codelens.review import Review
+
+    out = io.StringIO()
+    print_review(Review([], provider="recorded", unrecorded="ab12"), out)
+    assert out.getvalue().splitlines()[0] == (
+        "nothing reviewed: no recorded answer for this diff (expected ab12.json), and static analysis was off"
+    )

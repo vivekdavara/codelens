@@ -6,6 +6,8 @@ files the model was shown. Nothing here talks to GitHub; posting is :mod:`codele
 
 from __future__ import annotations
 
+import posixpath
+import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -16,7 +18,7 @@ from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_promp
 from codelens.providers import Provider, RecordingMissing, Usage
 from codelens.static import StaticResult
 
-__all__ = ["RECORDING", "Review", "dedupe", "rank", "review"]
+__all__ = ["RECORDING", "Review", "dedupe", "is_recording", "rank", "review", "split_recordings"]
 
 
 @dataclass
@@ -29,7 +31,7 @@ class Review:
     max_findings: int = MAX_FINDINGS
     rejections: list[Rejection] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
-    """Files not shown to the model, with the reason."""
+    """Files left out of the prompt, with the reason."""
     reviewed: list[str] = field(default_factory=list)
     """Paths of the files the model was shown."""
     over_cap: int = 0
@@ -84,11 +86,30 @@ def dedupe(findings: Iterable[Finding]) -> tuple[list[Finding], int]:
 
 
 RECORDING = "a CodeLens recording"
-"""Why a file under the recordings directory is not reviewed."""
+"""Why a recording in the diff is not reviewed."""
+_RECORDING_NAME = re.compile(r"[0-9a-f]{64}\.json")
 
 
-def _under(path: str, directory: str | None) -> bool:
-    return directory is not None and (path == directory or path.startswith(directory + "/"))
+def is_recording(path: str, recordings: str | None) -> bool:
+    """Whether ``path`` (as the diff names it) is one of CodeLens's recordings: a ``<key>.json`` file directly
+    in ``recordings``, the recordings directory as a path in the diff.
+
+    Only that shape. Anything else in the directory, a README or code, is reviewed like any other file, so a
+    pull request can't hide code from the review by putting it there.
+    """
+    return (
+        recordings is not None
+        and posixpath.dirname(path) == recordings
+        and _RECORDING_NAME.fullmatch(posixpath.basename(path)) is not None
+    )
+
+
+def split_recordings(patch: PatchSet, recordings: str | None) -> tuple[PatchSet, list[str]]:
+    """``patch`` without the recordings in it (:func:`is_recording`), and the paths left out."""
+    own = [f.path for f in patch if is_recording(f.path, recordings)]
+    if not own:
+        return patch, []
+    return PatchSet([f for f in patch if not is_recording(f.path, recordings)]), own
 
 
 def review(
@@ -117,18 +138,16 @@ def review(
     in CI) without a key; only a missing recording falls back, never an edited one or a live provider's
     failure.
 
-    Files under ``recordings`` (the recordings directory as a path in the diff) are never reviewed: they are
-    model answers, not code, and leaving them out means a recording committed to a pull request doesn't
-    change the prompt it answers.
+    Recordings in the diff (``<key>.json`` files directly in ``recordings``, the recordings directory as a
+    path in the diff) are never reviewed: they are model answers, not code, and leaving them out means a
+    recording committed to a pull request doesn't change the prompt it answers.
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
     if max_findings < 1 or max_prompt_chars < 1:
         raise ValueError("max_findings and max_prompt_chars must be positive")
-    own = [f.path for f in patch if _under(f.path, recordings)]
-    if own:
-        patch = PatchSet([f for f in patch if not _under(f.path, recordings)])
-    pre = [f for f in static.findings if not _under(f.path, recordings)] if static is not None else []
+    patch, own = split_recordings(patch, recordings)
+    pre = static.findings if static is not None else []
     # The model is asked for the same cap the review applies.
     prompt = build_prompt(patch, max_prompt_chars, max_findings, static=pre)
     result = Review(

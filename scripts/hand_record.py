@@ -16,10 +16,12 @@ import argparse
 import json
 from pathlib import Path
 
+from codelens.cli import path_in_diff
 from codelens.diff import decode_diff, parse_patch
 from codelens.prompts import MAX_FINDINGS, build_prompt
 from codelens.providers import Completion
 from codelens.providers.recorded import HAND_WRITTEN, write_recording
+from codelens.review import split_recordings
 from codelens.static import analyse, find_ruff
 
 
@@ -42,7 +44,9 @@ def main() -> None:
     patch = parse_patch(decode_diff(args.diff.read_bytes()))
     # The same prompt `codelens review` builds with the same options, or the recording would never be found.
     static = [] if args.no_static else analyse(patch, args.source_root, ruff=find_ruff()).findings
-    request = build_prompt(patch, max_findings=args.max_findings, static=static).request  # names the cap
+    # Like review, leave out recordings already in the diff (committed to the PR under --out).
+    shown, _ = split_recordings(patch, path_in_diff(args.out, args.source_root))
+    request = build_prompt(shown, max_findings=args.max_findings, static=static).request  # names the cap
     print(write_recording(args.out, request, Completion(response, HAND_WRITTEN), "recorded"))
 
 

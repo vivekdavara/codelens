@@ -56,3 +56,25 @@ def test_by_default_it_keys_the_prompt_review_builds_in_the_same_directory(tmp_p
         assert findings or not static
         expected = build_prompt(patch, static=findings).request.key()
         assert [p.name for p in out.iterdir()] == [f"{expected}.json"]
+
+
+def test_a_recording_already_in_the_diff_is_left_out_of_the_key(tmp_path: Path) -> None:
+    # Re-recording a PR that already has a recording committed under --out must key the prompt review
+    # sends, which leaves recordings out.
+    name = f".codelens/recordings/{'cd' * 32}.json"
+    code = "--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    diff = tmp_path / "pr.diff"
+    diff.write_text(f"{code}--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+{{}}\n")
+    answer = tmp_path / "answer.json"
+    answer.write_text('{"findings": []}')
+    out = tmp_path / ".codelens" / "recordings"
+    script = str(ROOT / "scripts" / "hand_record.py")
+    subprocess.run(
+        # From the checkout, as the README says to run it: --source-root defaults to ".".
+        [sys.executable, script, str(diff), str(answer), "--out", str(out), "--no-static"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    expected = build_prompt(parse_patch(code)).request.key()
+    assert [p.name for p in out.iterdir()] == [f"{expected}.json"]
