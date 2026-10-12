@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from codelens.sandbox import BOOTSTRAP, run_pytest, scrubbed_env
+from codelens.sandbox import BOOTSTRAP, COUNTS, run_pytest, scrubbed_env
 
 TESTS = {
     "capture on": "import subprocess, sys\n\n\ndef test_a():\n    subprocess.Popen({cmd})\n",
@@ -31,7 +31,12 @@ TESTS = {
 
 
 def through_a_pipe(test: Path, timeout: float) -> tuple[float, str]:
-    """The first version's I/O: the spec on a stdin pipe, the output read with communicate()."""
+    """The first version's I/O: the spec on a stdin pipe, the output read with communicate().
+
+    The child is today's ``BOOTSTRAP``, so the spec must have every key it reads; the result says whether
+    the test really ran (from the child's report), so a child that fails at once can't pass for a pipe that
+    returned quickly.
+    """
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as scratch:
         home = Path(scratch)
@@ -40,8 +45,10 @@ def through_a_pipe(test: Path, timeout: float) -> tuple[float, str]:
         spec = {
             "path": [],
             "include": [],
+            "source": [],
             "report": str(home / "report.json"),
             "args": [*args, "-c", str(home / "pytest.ini")],
+            "counts": list(COUNTS),
         }
         proc = subprocess.Popen(
             [sys.executable, "-I", "-c", BOOTSTRAP],
@@ -60,22 +67,35 @@ def through_a_pipe(test: Path, timeout: float) -> tuple[float, str]:
             proc.kill()
             proc.communicate()
             how = "timed out"
-    return time.monotonic() - started, how
+        elapsed = time.monotonic() - started
+        try:
+            passed = json.loads((home / "report.json").read_text())["counts"]["passed"]
+            how += f", {passed} passed"
+        except (OSError, ValueError, KeyError, TypeError):
+            how += ", no report: the test never ran"
+    return elapsed, how
 
 
-def main() -> None:
-    seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
+def measure(seconds: float) -> list[str]:
+    """One line per test: how long each runner took, and how the run ended."""
     cmd = repr([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+    lines = []
     with tempfile.TemporaryDirectory() as tmp:
         for name, template in TESTS.items():
             test = Path(tmp) / f"test_{name.replace(' ', '_')}.py"
             test.write_text(template.format(cmd=cmd))
             piped, how = through_a_pipe(test, timeout=seconds * 2)
             fixed = run_pytest([test], include=[])
-            print(
+            lines.append(
                 f"{name}: pipe {piped:.1f} s ({how}), codelens.sandbox {fixed.seconds:.2f} s "
                 f"({fixed.outcome.value}), sleeper {seconds:g} s"
             )
+    return lines
+
+
+def main() -> None:
+    for line in measure(float(sys.argv[1]) if len(sys.argv) > 1 else 30.0):
+        print(line)
 
 
 if __name__ == "__main__":
