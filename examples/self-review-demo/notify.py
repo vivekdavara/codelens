@@ -2,6 +2,15 @@
 
 import asyncio
 
+GREETING = "Hi"
+
+
+def opening(name: str) -> str:
+    if not name:
+        return f"{GREETING},"
+        name = "there"
+    return f"{GREETING} {name},"
+
 
 async def send(address: str, text: str) -> None:
     await asyncio.sleep(0)  # stands in for the network call
