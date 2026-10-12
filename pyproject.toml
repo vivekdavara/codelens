@@ -36,8 +36,9 @@ branch = true
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-# The eval cases are pull requests with seeded bugs: fixing or formatting them would change the cases.
-extend-exclude = ["evals/cases"]
+# The eval cases are pull requests with seeded bugs, and the test-generation samples are pull requests too:
+# fixing or formatting them would change the cases.
+extend-exclude = ["evals/cases", "evals/testgen/cases"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

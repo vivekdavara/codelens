@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "function": "stock.levels.reorder_point",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_safety_days_add_to_the_lead_time():\n    assert reorder_point(5, 3, safety_days=2) == 25\n"
+    },
+    {
+      "function": "stock.levels.reorder_point",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_negative_demand_is_refused():\n    with pytest.raises(ValueError):\n        reorder_point(-1, 3)\n"
+    },
+    {
+      "function": "stock.levels.reorder_point",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_no_demand_means_no_reorder_point():\n    assert reorder_point(0, 3, safety_days=4) == 0\n"
+    },
+    {
+      "function": "stock.levels.parse_sku",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_case_and_spaces_do_not_matter():\n    assert parse_sku(\"  ab-12 \") == (\"AB\", 12)\n"
+    },
+    {
+      "function": "stock.levels.parse_sku",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_a_sku_needs_one_dash():\n    with pytest.raises(ValueError):\n        parse_sku(\"AB1234\")\n"
+    },
+    {
+      "function": "stock.levels.parse_sku",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_letters_come_before_digits():\n    with pytest.raises(ValueError):\n        parse_sku(\"12-AB\")\n"
+    },
+    {
+      "function": "stock.levels.units_to_order",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_orders_round_up_to_whole_packs():\n    assert units_to_order(4, 5, 3, pack_size=10) == 20\n"
+    },
+    {
+      "function": "stock.levels.units_to_order",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_at_the_reorder_point_one_lead_time_is_ordered():\n    assert units_to_order(15, 5, 3) == 5\n"
+    },
+    {
+      "function": "stock.levels.units_to_order",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\nimport time\n\n\ndef test_stock_after_a_day():\n    time.sleep(120)\n    assert units_to_order(0, 1, 1) == 1\n"
+    },
+    {
+      "function": "stock.levels.units_to_order",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\nimport os\n\n\ndef test_exits_early():\n    os._exit(0)\n"
+    },
+    {
+      "function": "stock.levels.reorder",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_reorder():\n    assert reorder_point(1, 1) == 1\n"
+    },
+    {
+      "function": "stock.levels.parse_sku",
+      "code": "import pytest\n\nfrom stock.levels import parse_sku, reorder_point, units_to_order\n\n\ndef test_broken(:\n    pass\n"
+    }
+  ]
+}

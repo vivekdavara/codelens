@@ -2,3 +2,5 @@
 tests/fixtures/*.diff -text
 # Eval cases are byte-exact too: their diffs are recording keys, and their trees must match the diffs.
 evals/cases/** -text
+# So are the test-generation samples: their diffs and trees are part of the recording keys.
+evals/testgen/cases/** -text
