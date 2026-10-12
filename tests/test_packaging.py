@@ -14,3 +14,12 @@ def test_the_action_and_ci_install_the_same_pinned_ruff() -> None:
     (static,) = [d for d in extras["static"] if d.startswith("ruff")]
     (dev,) = [d for d in extras["dev"] if d.startswith("ruff")]
     assert static == dev and re.fullmatch(r"ruff==\d+\.\d+\.\d+", static)
+
+
+def test_the_package_and_pyproject_agree_on_the_version() -> None:
+    # Two places hold it: pyproject.toml for pip, codelens.__version__ for `codelens version` and the
+    # User-Agent. A release bumps both, or the action reports one version and installs another.
+    from codelens import __version__
+
+    assert tomllib.loads(PYPROJECT.read_text())["project"]["version"] == __version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__)
