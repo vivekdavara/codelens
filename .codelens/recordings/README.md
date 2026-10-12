@@ -14,8 +14,10 @@ prompt's SHA-256 (`<key>.json`), so it answers one version of one pull request's
   git add .codelens/recordings && git commit -m "Record CodeLens's review" && git push
   ```
 
-  CodeLens never reviews files in this directory, so committing a recording doesn't change the prompt it
-  answers. Any later change to the pull request's code does, and needs a new recording.
+  CodeLens never reviews the recordings in this directory (`<key>.json` files directly in it), so committing
+  a recording doesn't change the prompt it answers. Anything else here, this README included, is reviewed
+  like any other file. Any later change to the pull request's code changes the prompt, and needs a new
+  recording.
 - **With an `ANTHROPIC_API_KEY` repository secret**, the job reviews live instead and this directory is not
   used.
 

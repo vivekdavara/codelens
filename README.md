@@ -221,8 +221,8 @@ to this repository. It uses the PR's own version of the action, checked out at t
 change that breaks the action fails its own review. There is no API key by default:
 
 - **A recording committed under [`.codelens/recordings/`](.codelens/recordings/README.md)** that answers the
-  PR's diff is replayed. CodeLens never reviews that directory, so committing a recording to the PR doesn't
-  change the prompt it answers (`tests/test_cli_review.py`,
+  PR's diff is replayed. CodeLens never reviews the recordings in that directory (`<key>.json` files), so
+  committing a recording to the PR doesn't change the prompt it answers (`tests/test_cli_review.py`,
   `test_a_recording_committed_to_the_pr_still_replays`).
 - **Otherwise the review is static analysis alone** (`missing-recording: static`). The findings are posted
   as line comments, and the summary says that no model reviewed the diff and which recording would have
@@ -403,7 +403,8 @@ test writing, the same way: one call records a real answer for the test-generati
 After each day's core was done, independent review agents read that day's diff and reported only what they
 could reproduce; I reproduced each claim again before fixing it, and every fix has a test that fails on the
 old code. Day 2: 22 candidates, 21 confirmed and 1 plausible, all fixed. Day 3: 26 fixed. Day 4: 17 fixed.
-Day 5's own checks found two more. The ones worth knowing:
+Day 5: the release checks found three, and two review agents found more (below and in WALKTHROUGH.md). The
+ones worth knowing:
 
 - **A PR could run code in the action** (day 3). The pre-pass ran `python -m ruff` in the PR's checkout,
   where `-m` imports a planted `ruff.py` first, with the job's API key in the environment; and since day 1
@@ -425,6 +426,10 @@ Day 5's own checks found two more. The ones worth knowing:
   prompt it answered. Recordings are no longer reviewed.
 - **Every fork's PR would have failed the self-review job** (day 5), posting with a read-only token. The
   action doesn't post there now.
+- **A PR could hide its code from the review with a symlink** (day 5): with `.codelens/recordings` a symlink
+  to `../svc`, the recordings exclusion followed it and left `svc/pay.py` out as "a CodeLens recording",
+  finding and all; a symlink loop there crashed the review. The path is now worked out from names alone, and
+  only files shaped like recordings are left out.
 
 ## Develop
 

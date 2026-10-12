@@ -609,16 +609,22 @@ the recording that would have answered, which the summary names. It is narrow on
 `fail`; an edited recording (`ProviderError`, "does not match its key") and a live provider's failure still
 raise, because there the review was asked for a model's answer and posting less would hide a broken setup.
 In the action, `missing-recording: static` also means the recorded provider doesn't need a `recordings`
-input: the static pre-pass always has something to run.
+input: the static pre-pass always has something to run. It needs the pre-pass on: `--no-static` with
+`--missing-recording static` is refused, since it would review nothing and report "0 findings".
 
 **Recordings are never reviewed.** To have a model's review replayed, someone records it
 (`codelens review --provider anthropic --record`) and commits the recording to the PR. Committing it adds
 the recording to the diff, which changes the prompt, which changes the key, so without more the recording
-could never replay. `review` therefore leaves out every file under the recordings directory, given as a path
-in the diff, before the prompt is built, and lists each one as skipped ("a CodeLens recording"); static
-findings there are dropped too. The CLI works the path out from `--recordings` relative to `--source-root`
-and excludes nothing when the recordings live outside the checkout. Any change to the PR's code still
-changes the prompt and needs a new recording; that is the point of keying on the prompt.
+could never replay. `review` therefore leaves the recordings in the diff out before the prompt is built,
+and lists each one as skipped ("a CodeLens recording"). A recording is only what `write_recording` writes:
+a `<64 hex>.json` file directly in the recordings directory, given as a path in the diff
+(`review.is_recording`). Anything else there, code or a README, is reviewed, because an exclusion is a hole
+in what CodeLens checks. The CLI works the path out from `--recordings` relative to `--source-root` from
+names alone (`abspath`, `relpath`), never following a symlink, since in the action the checkout is the PR's;
+it excludes nothing when the recordings live outside the checkout. `codelens prompt` and
+`scripts/hand_record.py` leave recordings out the same way (`split_recordings`), so they show and key the
+prompt the review sends. Any change to the PR's code still changes the prompt and needs a new recording;
+that is the point of keying on the prompt.
 
 **The job's provider.** `provider` is `anthropic` when the repository has an `ANTHROPIC_API_KEY` secret and
 `recorded` otherwise, with `recordings: .codelens/recordings` and `missing-recording: static`. So the default

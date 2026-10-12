@@ -321,11 +321,22 @@ summary never pretends: its headline says "from static analysis only ... so no m
 **Tell me about the recording that could never replay.** To get a model's review replayed on a PR, you record
 it locally and commit the recording to the PR. But committing it adds the recording to the PR's diff, the
 diff is the prompt, and the prompt's hash is the recording's name, so the recording no longer answers the
-new prompt. It could never replay. The fix: `review` never reviews files under the recordings directory
-(they're model output, not code); it lists them as skipped, and the CLI works the directory out as a path in
-the diff from `--recordings` and `--source-root`. `test_a_recording_committed_to_the_pr_still_replays`
-commits a recording into a diff and replays it; it fails without the exclusion. I found this by walking
-through the flow before writing it down, not in production, which is the cheap time to find it.
+new prompt. It could never replay. The fix: `review` never reviews the recordings in the diff (they're
+model output, not code); it lists them as skipped, and the CLI works the directory out as a path in the diff
+from `--recordings` and `--source-root`. `test_a_recording_committed_to_the_pr_still_replays` commits a
+recording into a diff and replays it; it fails without the exclusion. I found this by walking through the
+flow before writing it down, not in production, which is the cheap time to find it.
+
+**And the fix had its own bug.** My first version left out every file under the directory, and worked the
+directory out with `Path.resolve()`. A review agent showed two ways that went wrong, both from the PR's own
+checkout, which the PR controls: a symlink loop at `.codelens/recordings` crashed the review with a
+`RuntimeError`, and a symlink from `.codelens/recordings` to `../svc` made `svc/pay.py` "a CodeLens
+recording", so its finding was silently dropped. A PR could hide code from its reviewer. Now the path comes
+from names alone (`os.path.abspath`, `relpath`; no symlink is followed), and only files shaped like
+recordings are left out: `<64 hex>.json` directly in the directory, so a README or code put there is reviewed
+like anything else. The same review found that `codelens prompt` and `hand_record.py` didn't apply the
+exclusion, so they showed a key the review never looks up. The lesson: an exclusion is a hole in what you
+check, so make it as narrow as its purpose.
 
 **What happened the first time it posted to the real GitHub API?** Until day 5 every posting test ran
 against a local fake that matched the documented API. On demo PR #1 (seeded bugs, never merged), the first
