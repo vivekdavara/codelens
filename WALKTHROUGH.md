@@ -1,8 +1,15 @@
 # CodeLens walkthrough
 
-Questions an interviewer is likely to ask about CodeLens, with short answers grounded in the code. Covers days
-1 to 4 (the diff parser, the review engine, the static pre-pass and the eval set, and test generation); day 5
-adds its own section.
+Questions an interviewer is likely to ask about CodeLens v1.0.0, with short answers grounded in the code:
+the diff parser, the review engine, the static pre-pass and the eval set, test generation, and CodeLens
+reviewing its own pull requests.
+
+**Reading order**, for someone with an hour: this file's first section; `review.py` (all of it, it's short);
+`findings.py` (`check_response`, `_locate`); `diff.py` (`FileDiff.anchor`); `github.py` (`fingerprint`,
+`post_review`); `action.yml` (the Review step); then the section of this file for whatever you'll be asked
+about. The stories worth telling are under "Tell me about..." questions: the `ruff.py` that ran in the
+action (day 3), exit status 0 that wasn't a pass (day 4), the pipe that wasn't the problem (day 4), and the
+recording that could never replay (day 5).
 
 ## The one-minute version
 
@@ -294,6 +301,75 @@ is real only when the test turns capture off (`capsys.disabled()`): 30.2 s again
 stayed, the regression test now uses that case (before, it passed on both versions), and the docs carry
 the measured numbers and the correction. Lesson: measure the mechanism before writing down the cause.
 
+## Self-review and the release (day 5)
+
+**How does CodeLens review its own pull requests without a key?** The `self-review` job in `ci.yml` runs
+the PR's own version of the action (`uses: ./`) on every pull request, checked out at the PR's head commit,
+with `provider: recorded`, `recordings: .codelens/recordings` and `missing-recording: static`. A new PR has
+no recording, because a recording answers one exact prompt, so `review.review` catches that
+`RecordingMissing` and the review is the static findings alone, with `Review.unrecorded` naming the
+recording that would have answered. The findings are posted like any review. With an `ANTHROPIC_API_KEY`
+repository secret, the job's `provider` expression picks `anthropic` instead.
+
+**Isn't falling back the opposite of "loud on a miss"?** It's opt-in, and narrow. The default is still
+`fail`, so tests, evals and CI jobs that expect a recording still fail when the prompt changes
+(`action-static` checks exactly that). The fallback covers one error, a missing recording; an edited
+recording or a live provider's failure still raises (`test_only_a_missing_recording_falls_back`), because
+there the review was asked for a model's answer and posting less would hide a broken setup. And the
+summary never pretends: its headline says "from static analysis only ... so no model reviewed it".
+
+**Tell me about the recording that could never replay.** To get a model's review replayed on a PR, you record
+it locally and commit the recording to the PR. But committing it adds the recording to the PR's diff, the
+diff is the prompt, and the prompt's hash is the recording's name, so the recording no longer answers the
+new prompt. It could never replay. The fix: `review` never reviews files under the recordings directory
+(they're model output, not code); it lists them as skipped, and the CLI works the directory out as a path in
+the diff from `--recordings` and `--source-root`. `test_a_recording_committed_to_the_pr_still_replays`
+commits a recording into a diff and replays it; it fails without the exclusion. I found this by walking
+through the flow before writing it down, not in production, which is the cheap time to find it.
+
+**What happened the first time it posted to the real GitHub API?** Until day 5 every posting test ran
+against a local fake that matched the documented API. On demo PR #1 (seeded bugs, never merged), the first
+real run posted one review with three line comments, pinned to the head commit. The second push added a bug
+*above* the others, moving them down nine lines: GitHub moved the old comments to their new lines,
+CodeLens's fingerprints (file, line text, position among identical lines, not the line number) recognised
+all three, and it posted only the new finding with "Not repeated: 3 findings". The seeded off-by-one in
+`batches` was missed both times, which is what a review without a model should miss. Both jobs took 13–19 s.
+
+**The job runs the PR's own action with a write token. Isn't that dangerous?** On a pull request from a
+branch of this repository, the token is the job's (`contents: read`, `pull-requests: write`) and the PR's
+author already has write access, so running their version of the action gives them nothing new. On a fork's
+PR, `pull_request` gives the job a read-only token and no secrets, so there is nothing to post with and no
+key to steal; that's why it's `pull_request` and never `pull_request_target`, which would run with the base
+repository's secrets. Inside the job, the PR's code is still never imported by accident: every `python` runs
+with `-I` and ruff runs as a binary (day 3).
+
+**And on a fork's PR the job just fails?** It did, in the first version of the job, and I found it while
+writing the answer above: the static-only review always has something to post, the post answers 403 with a
+read-only token, and every outside contribution would have had a red check. Before day 5 that needed an
+unusual setup (the recorded provider with recordings configured), so nobody hit it. The action now compares
+the PR's head repository with the base and, on a fork (or a deleted fork, where `head.repo` is null), leaves
+out `--post` and says so in a notice; the review is still in the job summary
+(`test_the_review_step_does_not_post_on_a_fork_s_pull_request`).
+
+**Did re-running the measurements for the release find anything?** Yes: one measurement had silently
+stopped measuring. `scripts/measure_runner_stall.py` emulates the old pipe runner with the sandbox's real
+bootstrap. A day-4 review fix made the bootstrap read two more keys from its spec; the script never passed
+them, so its child died with a `KeyError` before starting the sleeper, and the "pipe" returned in 0.1 s,
+which the script printed as if the stall were gone. It now passes the full spec and reads the child's report
+(a child that never ran a test says so), and `tests/test_measure_runner_stall.py` runs it with a 3 s
+sleeper. At 30 s it reproduces day 4's numbers: 30.2 s through the pipe, 0.30 s for the sandbox. The lesson
+is the same as day 4's, from the other side: a measurement script is code, and it needs a test.
+
+**How do you test the action's shell?** The CI jobs run the whole action, but only on GitHub. So
+`tests/test_action.py` also pulls the Review step's script out of `action.yml` and runs it under
+`bash -eo pipefail` the way the runner does, with `codelens` replaced by a stub that records its arguments
+and the variables the step exported. That covers each skip (no provider, a moved PR, no key), the
+arguments for posting, and the new fallback branch; deleting that branch fails a test.
+
+**What is in the release?** The `v1.0.0` tag and GitHub release; `pyproject.toml` and `codelens.__version__`
+at 1.0.0, so the action can be pinned (`vivekdavara/codelens@v1.0.0`); and the measurements in the README
+re-run at the release commit (the README's "Release check").
+
 ## Large PRs and limits
 
 **What if the PR is huge?** The diff shown to the model is capped at 200,000 characters (roughly 50K tokens;
@@ -347,7 +423,7 @@ generator kept tests whose assertions had failed. A plugin in the child now coun
 The other good one: candidates shared a directory, so one candidate could write a `conftest.py` that made
 the next one's failures pass. Each run now gets a fresh directory and `--noconftest`.
 
-## What's not done yet
+## Limitations and what's next
 
 - **The model's review quality is unmeasured.** The eval set and harness exist; the 14 real answers need an
   API key (`codelens eval --provider anthropic --record`). The hand-written recordings prove the pipeline,
@@ -360,4 +436,10 @@ the next one's failures pass. Each run now gets a fresh directory and `--noconft
 - Comments on removed lines (LEFT side): the prompt numbers only new-file lines, so a removal is flagged on
   the nearest line still in the file.
 - Reviewing only what changed since the last review; today every run reviews the whole PR diff and relies on
-  fingerprints to avoid repeats.
+  fingerprints to avoid repeats. A re-run on a head that was already reviewed still pays for one model call,
+  because earlier reviews are read only when posting.
+- **The vendor APIs were never called for real.** The Anthropic and OpenAI providers are tested against local
+  fakes of the documented request and response shapes. The GitHub side has now run for real (demo PR #1);
+  the model side needs a key.
+- **Self-review without a key is static analysis alone**, and a recording answers one exact diff, so any
+  later push needs a new recording (or the repository secret, for live reviews).
