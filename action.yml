@@ -7,12 +7,14 @@ branding:
 
 # The action fetches the pull request's diff, summarises its reviewable lines, reviews it with the chosen
 # provider, writes the review to the job summary and, on a pull request, posts it as one review. Test
-# generation (day 4) builds on the same steps.
+# generation runs from the CLI only: it runs the PR's code, which belongs in a step without the key.
 #
 # Security: every ${{ }} value reaches the shell through env, never interpolated into a script, so a branch
 # name or input can't inject commands. Every python runs with -I: steps run in the workspace, which is the
-# PR's checkout, and without -I a `json.py` or `pip.py` there would be imported instead of the real module. Run this on `pull_request`, not `pull_request_target`: secrets are
-# then never exposed to code from forks, and on a fork's PR (no secrets) the review is skipped, not failed.
+# PR's checkout, and without -I a `json.py` or `pip.py` there would be imported instead of the real module.
+# Run this on `pull_request`, not `pull_request_target`: secrets are then never exposed to code from forks.
+# On a fork's PR a live provider has no key, so its review is skipped, not failed, and nothing is posted,
+# because the token is read-only there.
 
 inputs:
   github-token:
