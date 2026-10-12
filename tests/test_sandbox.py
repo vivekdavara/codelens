@@ -70,14 +70,16 @@ def test_a_hanging_test_is_killed_at_the_timeout(tmp_path: Path) -> None:
 
 def test_children_the_tests_start_are_killed_too(tmp_path: Path) -> None:
     pidfile = tmp_path / "child.pid"
+    # With pytest's capture off, the sleeper inherits the run's own stdout: a runner that read the output
+    # through a pipe to its end would wait for the sleeper (scripts/measure_runner_stall.py).
     test = (
-        "import subprocess, sys\n\ndef test_a():\n"
-        "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "import subprocess, sys\n\ndef test_a(capsys):\n"
+        "    with capsys.disabled():\n"
+        "        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
         f"    open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
     )
     result, _ = run(tmp_path, test)
     assert result.outcome is Outcome.PASSED
-    # Reading the child's output through a pipe waited for the sleeper, which held the pipe open.
     assert result.seconds < 30
     pid = int(pidfile.read_text())
     deadline = time.monotonic() + 5

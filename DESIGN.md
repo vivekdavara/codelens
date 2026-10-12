@@ -521,9 +521,13 @@ status, and each target file's statements and missing lines from `Coverage.analy
   a process a test started in the background dies with it.
 - **A report, not an exit status.** The verdict comes from the report written after pytest returns. A
   test that calls `os._exit(0)` leaves no report and is an error, not a pass.
-- **Output to a file, not a pipe.** The first version read the child's output with `communicate()`. A
-  background process a test started held the pipe open, so the run waited for that process (60 s in the
-  test) instead of for pytest. Waiting on the child itself and reading a file fixed it.
+- **Output to a file, not a pipe.** The runner waits for the child to exit, then reads its output from a
+  file. The first version read a pipe to its end with `communicate()`, which lets a test stall the run: a
+  test that turns pytest's capture off (`capsys.disabled()`) and starts a background process hands it the
+  run's stdout, and the pipe then ends only when that process does. Measured with
+  `scripts/measure_runner_stall.py`: 30.2 s with a pipe and 0.29 s now, for a test that leaves a 30 s
+  sleeper behind. With capture on (pytest's default) the background process inherits pytest's capture file
+  instead, and the pipe version returned in 0.2 s.
 - **The real tools.** coverage and pytest are imported before the project's directories go on `sys.path`,
   so a `coverage.py`, `pytest.py` or `json.py` in the project can't stand in for them.
 

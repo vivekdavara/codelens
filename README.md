@@ -4,13 +4,16 @@ An LLM pull-request reviewer and test generator that runs as a GitHub Action. It
 on the lines a PR changed, grounded by static analysis, and proposes pytest tests for changed Python functions,
 keeping only the ones that pass and add coverage.
 
-**Status: day 3 of 5.** Built so far: the unified-diff parser every comment is anchored through (day 1); the
+**Status: day 4 of 5.** Built so far: the unified-diff parser every comment is anchored through (day 1); the
 review engine (day 2): a provider interface with a recorded provider by default and opt-in Anthropic and
 OpenAI providers, a findings schema with strict validation and quote-checked anchoring, one-review posting
-to GitHub with a dry run, and the action's review step; and (day 3) a static pre-pass (ruff plus four rules
-of CodeLens's own) whose findings are posted and shown to the model, one dedupe rule across both sources,
-and an eval set of 14 pull requests with seeded bugs scored by `codelens eval`. Test generation (day 4) is
-next. See [DESIGN.md](DESIGN.md) for the whole plan.
+to GitHub with a dry run, and the action's review step; (day 3) a static pre-pass (ruff plus four rules of
+CodeLens's own) whose findings are posted and shown to the model, one dedupe rule across both sources, and
+an eval set of 14 pull requests with seeded bugs scored by `codelens eval`; and (day 4) test generation:
+`codelens testgen` asks for pytest tests of the changed top-level functions, runs each in a child process
+with an allow-listed environment and a timeout, and keeps the ones that pass and run lines of a changed
+function nothing else ran. CodeLens reviewing its own PRs and the v1.0.0 release (day 5) are next. See
+[DESIGN.md](DESIGN.md) for the whole plan.
 
 ## How it works
 
@@ -57,6 +60,7 @@ codelens static pr.diff               # the static pre-pass only (reads the file
 codelens prompt pr.diff               # exactly what the model would be sent, static block included
 codelens review pr.diff               # review it (recorded provider, dry run)
 codelens eval                         # score it on the eval set (precision and recall)
+codelens testgen pr.diff --tests tests  # propose tests for the changed functions; keep the useful ones
 ```
 
 `review` and `prompt` run the static pre-pass on `--source-root` (default `.`), which must be a checkout of
@@ -82,6 +86,35 @@ dry run: nothing posted (pass --post to post the review)
 That recording is **hand-written** test data (its third answer is a deliberate off-by-one citation, to show
 the quote check dropping it); it is not model output. `--json` prints the same as JSON plus the exact Reviews
 API payload; `--summary-file FILE` appends the review as Markdown.
+
+`testgen` reads the changed functions from `--source-root` like the pre-pass, runs the existing suite
+(`--tests`, repeatable, paths in the checkout) for a baseline, then each candidate on its own in a scratch
+directory with a 60 s `--timeout`. It needs pytest and coverage in the interpreter that runs the tests
+(`pip install 'codelens[testgen]'`, or `--python` for the project's own virtualenv). `--out DIR` writes the
+kept tests; `--json` adds every candidate's code and output. Output on the sample in this repo, replayed
+from its hand-written answer (the command is under "Test generation (day 4)" below):
+
+```text
+dropped [0] stock.levels.reorder_point: passes, but runs no new line of a changed function
+kept    [1] stock.levels.reorder_point: passes, and runs 1 new line of changed functions
+...
+dropped [7] stock.levels.units_to_order: fails
+dropped [8] stock.levels.units_to_order: timed out
+dropped [9] stock.levels.units_to_order: ended without reporting a result
+rejected [10] unknown-function: 'stock.levels.reorder' is not a changed function shown
+rejected [11] not-python: the code does not parse
+3 changed functions in 1 file: kept 5 of 10 tests run
+tests from recorded: hand-written, 0 input / 0 output tokens
+  stock.levels.reorder_point: statements run 3 of 5 before, 5 of 5 after
+  stock.levels.parse_sku: statements run 5 of 7 before, 7 of 7 after
+  stock.levels.units_to_order: statements run 0 of 6 before, 5 of 6 after
+coverage of the changed functions: 8 of 18 statements before, 17 of 18 after (+50.0 points)
+  of them on lines the diff adds: 7 of 17 before, 16 of 17 after
+existing suite: passed
+```
+
+Generated tests run the PR's code, so run `testgen` where the PR's own tests already run, in a step with
+no secrets in it (DESIGN.md, "Security"). The action doesn't run it yet.
 
 ### Live providers (opt-in)
 
@@ -155,6 +188,28 @@ of the PR's own diff is ever posted (never of a `diff-file`), pinned to the even
 push has landed by the time the diff is fetched, the review is skipped and that push's run reviews it.
 
 ## Results so far
+
+### Test generation (day 4)
+
+On the `stock` sample (`evals/testgen/`: a warehouse module whose PR adds input checks, a safety buffer and
+a new function; the existing suite has two happy-path tests), from a **hand-written** answer: there is no
+API key on this machine, so the 12 candidates were written by hand to exercise every decision the filter
+makes (two tests of new behaviour on old lines, a wrong expectation, a 120 s sleep, an `os._exit(0)`, an
+unknown function, code that doesn't parse). These numbers measure the filter and the accounting, not a
+model.
+
+| What | Result | Reproduce |
+|---|---|---|
+| Candidates kept | 5 of the 10 that ran; 2 more rejected before running | `.venv/bin/codelens testgen evals/testgen/cases/stock/pr.diff --source-root evals/testgen/cases/stock/after --tests tests --recordings evals/testgen/recordings --timeout 5` |
+| Coverage of the changed functions' bodies | 8 of 18 statements (the existing suite) → 17 of 18 (+50.0 points) | same |
+| Of those, on lines the diff adds | 7 of 17 → 16 of 17 | same |
+| Time | 7.0 s wall time on an Apple M3, 5 s of it the candidate that sleeps until its timeout | same, under `time` |
+| A test that leaves a 30 s background process | 0.29 s, the process killed with the run; 30.2 s for the first version, which read the output through a pipe (when the test turns pytest's capture off; with capture on, 0.2 s either way) | `.venv/bin/python scripts/measure_runner_stall.py` |
+
+Two of the dropped candidates check behaviour the PR added, but on lines the existing suite already ran, so
+line coverage can't tell them from a repeat. Kept tests also pin current behaviour: a test of what buggy
+code should do fails and is dropped. Both are in DESIGN.md's "What it measures, and what it can't", with what
+would do better (branch coverage, mutation testing). `tests/test_testgen_sample.py` pins the numbers.
 
 ### The eval set (day 3)
 
@@ -247,7 +302,7 @@ update except one whose only keys are the loop's own (`for k in d: d.update({k: 
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 546 passing | `.venv/bin/pytest` |
+| Tests | 620 passing | `.venv/bin/pytest` |
 | Pre-pass property tests (day 3) | 120 seeded edits diffed by real git at `-U0`, `-U1` and `-U3`: `old_version` rebuilds every old file exactly (it found one end-of-file case, fixed); 2,000 seeded mutations of real code never crash the CodeLens rules; on random edits every static finding sits on a shown line and quotes it | `.venv/bin/pytest tests/test_old_version.py tests/test_static_fuzz.py` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 98% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |
@@ -273,6 +328,9 @@ ANTHROPIC_API_KEY=... .venv/bin/codelens eval --provider anthropic --record
 ```
 
 The answers land in `evals/recordings/`, after which plain `codelens eval` (and CI) replays them.
+
+The model's test writing, the same way: one call records a real answer for the test-generation sample
+(the command is in `evals/testgen/README.md`), and the report then measures a model instead of the filter.
 
 ## Develop
 
