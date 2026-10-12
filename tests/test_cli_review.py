@@ -463,3 +463,83 @@ def test_record_writes_where_replay_reads(
     assert len(list((tmp_path / "from-env").iterdir())) == 1
     code, out, _ = run(capsys, "review", str(diff_file))
     assert code == 0 and out.startswith("svc/pay.py:3  high")
+
+
+UNRECORDED_DIFF = """\
+diff --git a/svc/pay.py b/svc/pay.py
+--- a/svc/pay.py
++++ b/svc/pay.py
+@@ -1,2 +1,4 @@
+ def refund(amount, fee, log):
+-    return amount - fee
++    net = amount - fee
++    log("refund of {net}")
++    return net
+"""
+
+
+@pytest.fixture
+def unrecorded(tmp_path: Path) -> tuple[Path, Path]:
+    """A diff no recording answers, and a checkout of its new version with one static problem (CL004)."""
+    (tmp_path / "head" / "svc").mkdir(parents=True)
+    (tmp_path / "head" / "svc" / "pay.py").write_text(
+        'def refund(amount, fee, log):\n    net = amount - fee\n    log("refund of {net}")\n    return net\n'
+    )
+    (tmp_path / "new.diff").write_text(UNRECORDED_DIFF)
+    return tmp_path / "new.diff", tmp_path / "head"
+
+
+def test_missing_recording_static_reviews_with_static_analysis_alone(
+    capsys: pytest.CaptureFixture[str], unrecorded: tuple[Path, Path], tmp_path: Path
+) -> None:
+    diff, head = unrecorded
+    base = ("review", str(diff), "--source-root", str(head), "--recordings", str(tmp_path / "none"))
+    code, _, err = run(capsys, *base)
+    assert code == 1 and "no recorded response" in err  # the default is still a loud miss
+    code, out, _ = run(capsys, *base, "--missing-recording", "static")
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0].startswith("svc/pay.py:3  medium  bug  The string uses `{net}` but has no `f` prefix")
+    assert lines[1].startswith("1 finding from static analysis only: no recorded answer for this diff")
+    code, out, _ = run(capsys, *base, "--missing-recording", "static", "--json")
+    data = json.loads(out)
+    assert data["unrecorded"] and data["reviewed"] == [] and data["model"] == ""
+    assert [(f["line"], f["source"], f["rule"]) for f in data["findings"]] == [(3, "static", "CL004")]
+
+
+def test_a_static_only_review_is_posted_like_any_other(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_server: FakeServer,
+    unrecorded: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    # What CodeLens's own PRs get in CI without a key: the recorded provider misses, the static finding is
+    # posted as a line comment, and the review body says no model reviewed the diff.
+    diff, head = unrecorded
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("GITHUB_API_URL", fake_server.url)
+    fake_server.reply(Reply(200, []), Reply(200, []))
+    fake_server.reply(Reply(200, {"id": 7, "html_url": "https://github.com/o/r/pull/5#pullrequestreview-7"}))
+    code, _, err = run(
+        capsys,
+        "review",
+        str(diff),
+        "--source-root",
+        str(head),
+        "--recordings",
+        str(tmp_path / "none"),
+        "--missing-recording",
+        "static",
+        "--post",
+        "--repo",
+        "o/r",
+        "--pr",
+        "5",
+        "--commit",
+        "c5",
+    )
+    assert code == 0 and "posted review 7 with 1 finding as line comments" in err
+    body = fake_server.requests[-1].body
+    assert "from static analysis only" in body["body"] and body["commit_id"] == "c5"
+    assert [(c["path"], c["line"]) for c in body["comments"]] == [("svc/pay.py", 3)]

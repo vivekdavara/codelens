@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rev.add_argument("--recordings", type=Path, help="recordings directory (default: .codelens/recordings)")
     rev.add_argument("--record", action="store_true", help="save the live provider's answer to --recordings")
+    rev.add_argument(
+        "--missing-recording",
+        choices=["fail", "static"],
+        default="fail",
+        help="when no recording answers this diff: fail (default), or post static analysis alone",
+    )
     rev.add_argument("--max-findings", type=positive_int, default=MAX_FINDINGS)
     rev.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
     rev.add_argument("--json", action="store_true", help="print the review and its payload as JSON")
@@ -306,6 +312,7 @@ def review_json(result: Review, payload: dict[str, Any]) -> dict[str, Any]:
         "over_cap": result.over_cap,
         "duplicates": result.duplicates,
         "below_min_severity": result.below,
+        "unrecorded": result.unrecorded,
         "static": static_json(result.static),
         "payload": payload,
     }
@@ -320,7 +327,13 @@ def print_review(result: Review, out: TextIO) -> None:
             file=out,
         )
     n, files = len(result.findings), len(result.reviewed)
-    if not result.reviewed:
+    if result.unrecorded is not None:
+        print(
+            f"{plural(n, 'finding')} from static analysis only: no recorded answer for this diff "
+            f"(expected {result.unrecorded}.json), so no model call was made",
+            file=out,
+        )
+    elif not result.reviewed:
         print(
             "nothing reviewed: no file in the diff could be shown to the model (no model call made)", file=out
         )
@@ -389,6 +402,7 @@ def run_review(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
             max_findings=args.max_findings,
             max_prompt_chars=args.max_prompt_chars,
             min_severity=Severity(args.min_severity),
+            static_if_unrecorded=args.missing_recording == "static",
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: review failed: {exc}", file=err)
