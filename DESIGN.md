@@ -55,6 +55,7 @@ flowchart LR
 | Dedupe across sources | `codelens.review.dedupe` | 3 |
 | Eval set and harness | `evals/`, `codelens.evals` | 3 |
 | Test generation and coverage delta | `codelens.testgen`, `codelens.sandbox` | 4 |
+| Static-only fallback, recordings left out, self-review job | `codelens.review`, `action.yml`, `ci.yml` | 5 |
 
 ## The diff parser (day 1)
 
@@ -325,7 +326,9 @@ whose line numbers aren't the PR's), pinned to the event's head commit; after fe
 PR's head again, and if a newer push has landed it skips the review, because that push's own run reviews it
 and these line numbers would be pinned to the wrong commit. When there is nothing to review with, it skips the review with a
 notice instead of failing: a live provider without `api-key` (a fork's PR gets no secrets), or the recorded
-provider without `recordings`. Inputs reach the shell through env only.
+provider without `recordings` (unless `missing-recording` is `static`, day 5). On a fork's PR it doesn't post
+(day 5): the job's token is read-only there, so the post would only fail the job; the review stays in the job
+summary. Inputs reach the shell through env only.
 
 ## Static pre-pass (day 3)
 
@@ -591,6 +594,45 @@ can. So test generation belongs where the PR's own tests already run, and in a s
 the model call needs the API key and runs no PR code, while the test runs need no key and run PR code, so
 the two belong in separate steps or jobs. The action doesn't run test generation yet.
 
+## Self-review (day 5)
+
+CodeLens reviews its own pull requests: the `self-review` job in `ci.yml` runs on every `pull_request` to
+this repository, with the PR's own version of the action (`uses: ./`), checked out at the PR's head commit
+so the static pre-pass reads the PR's files, and `pull-requests: write` to post. Three things make that
+work without a key.
+
+**A static-only fallback.** A recording answers one exact prompt, so a new PR never has one, and the
+recorded provider raises `RecordingMissing`. With `static_if_unrecorded` (CLI `--missing-recording static`,
+action input `missing-recording: static`), `review.review` catches that one error and returns the static
+findings alone: `reviewed` is empty, because no model saw anything, and `Review.unrecorded` holds the key of
+the recording that would have answered, which the summary names. It is narrow on purpose. The default stays
+`fail`; an edited recording (`ProviderError`, "does not match its key") and a live provider's failure still
+raise, because there the review was asked for a model's answer and posting less would hide a broken setup.
+In the action, `missing-recording: static` also means the recorded provider doesn't need a `recordings`
+input: the static pre-pass always has something to run.
+
+**Recordings are never reviewed.** To have a model's review replayed, someone records it
+(`codelens review --provider anthropic --record`) and commits the recording to the PR. Committing it adds
+the recording to the diff, which changes the prompt, which changes the key, so without more the recording
+could never replay. `review` therefore leaves out every file under the recordings directory, given as a path
+in the diff, before the prompt is built, and lists each one as skipped ("a CodeLens recording"); static
+findings there are dropped too. The CLI works the path out from `--recordings` relative to `--source-root`
+and excludes nothing when the recordings live outside the checkout. Any change to the PR's code still
+changes the prompt and needs a new recording; that is the point of keying on the prompt.
+
+**The job's provider.** `provider` is `anthropic` when the repository has an `ANTHROPIC_API_KEY` secret and
+`recorded` otherwise, with `recordings: .codelens/recordings` and `missing-recording: static`. So the default
+is a replayed or static-only review at no cost, and adding the secret makes every push one live call.
+
+Trust: on a PR from a branch of this repository, the author already has write access, so running their
+version of the action with a write token gives them nothing new. On a fork's PR, `pull_request` gives the job
+a read-only token and no secrets, and the action doesn't try to post. `pull_request_target` is never used.
+
+The first run against the real API (demo PR #1, seeded bugs, never merged): one review, three line
+comments, pinned to the head commit; after a push that moved those lines down nine, one review with only the
+new finding and "Not repeated: 3 findings", the fingerprints matching at the new line numbers. Until then,
+posting had run only against a local fake of the documented API.
+
 ## Decisions and trade-offs
 
 - **Composite action, not a Docker action.** Composite actions start in seconds (no image build) and run on any
@@ -607,11 +649,17 @@ the two belong in separate steps or jobs. The action doesn't run test generation
 - **Raw HTTP, not vendor SDKs.** Two small request builders and one retrying client keep the action
   dependency-free and make every header and retry decision visible and testable; the cost is maintaining
   them as the APIs evolve.
-- **Fail loudly on a recording miss.** A replay that quietly fell back to a live call, or to no review, would
-  make CI results depend on whether a key happened to be present.
+- **Fail loudly on a recording miss, unless told otherwise.** A replay that quietly fell back to a live call,
+  or to no review, would make CI results depend on whether a key happened to be present. The one exception
+  is opt-in and visible (day 5): `missing-recording: static` turns a miss into a static-only review whose
+  headline says no model reviewed the diff.
+- **The reviewer reviews itself with its own new version.** The self-review job uses the PR's action, not a
+  released one, so a change that breaks the action or the posting path fails on its own PR. The cost: a
+  same-repository PR runs its own code with a write token, which its author could do anyway.
 
 ## Out of scope
 
 Languages other than Python for the static pre-pass and test generation (the reviewer itself works on any text
 diff); multi-commit "review only what changed since my last review"; auto-fix suggestions as GitHub suggested
-changes (a possible extension once anchoring is proven).
+changes (a possible extension once anchoring is proven); test generation in the action, which needs the model
+call (with the key, running no PR code) and the test runs (running PR code, with no key) in separate steps.
