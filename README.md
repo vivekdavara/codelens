@@ -230,17 +230,21 @@ change that breaks the action fails its own review. There is no API key by defau
 - **With an `ANTHROPIC_API_KEY` repository secret** the job reviews live instead, one model call per push.
 
 [Pull request #1](https://github.com/vivekdavara/codelens/pull/1) is the demonstration: a module with seeded
-bugs, never merged. These are the two reviews `github-actions[bot]` posted there, on the first run of
+bugs, never merged. These are the three reviews `github-actions[bot]` posted there, on the first runs of
 CodeLens's posting code against the real GitHub API:
 
 | Push | Seeded bugs in the diff | Posted | Not posted |
 |---|---|---|---|
 | 1 (`d76c2fc`) | 4: CL001, CL003 and CL004 bugs, and a batching off-by-one that no rule targets | 3 line comments: the three rule bugs | the off-by-one, which needs a model |
 | 2 (`795abb0`), a fifth bug added above the others, moving them down 9 lines | 5 | 1 line comment: the new CL002 bug | the three already posted ("Not repeated: 3 findings an earlier CodeLens review already posted"), and the off-by-one |
+| 3 (`971870a`), a **hand-written** recording committed under `.codelens/recordings/`, standing in for a model's answer that names the off-by-one | 5 | 1 line comment: the off-by-one, replayed from the recording ("1 finding on 1 reviewed file (hand-written, 0 input / 0 output tokens)") | the four static findings, already posted; the recording itself ("Not reviewed: … (a CodeLens recording)") |
 
 GitHub moved the first review's comments to their new lines, and CodeLens's fingerprints (file, line text,
-position among identical lines) recognised them at the new line numbers. Each self-review job took 13–19 s,
-setup and install included. The repository's own lint passes on the demo module: none of the bugs is a
+position among identical lines) recognised them at the new line numbers. The third push is the flow for a
+model's review: the recording was keyed on the diff before it was committed (the key the second review named
+as missing), and because CodeLens leaves its recordings out of the review, committing it didn't change the
+prompt, so CI replayed it. The answer is hand-written, so it shows the mechanism, not a model's judgement.
+Each self-review job took 13–19 s, setup and install included. The repository's own lint passes on the demo module: none of the bugs is a
 stable ruff rule.
 
 ## Results
@@ -259,7 +263,7 @@ for v1.0.0 (Apple M3, on battery) and matched what was first reported, except wh
 | Static pre-pass on this repository's history | 123 commits: 16 findings, the 14 seeded eval bugs and 2 false positives in tests | `.venv/bin/python scripts/measure_static_history.py` |
 | Real diffs parse | 123 commits, 438 file diffs of this repository: 0 failures | `.venv/bin/python scripts/check_history.py` |
 | Test generation (hand-written answer) | 5 of 10 candidates kept; changed functions' statements covered 8 of 18 → 17 of 18 (+50.0 points); 7.47 s | see "Test generation" |
-| Self-review on a real PR | 3 of 4 seeded bugs posted (the 4th needs a model); on the next push only the new finding, 3 not repeated | [PR #1](https://github.com/vivekdavara/codelens/pull/1) |
+| Self-review on a real PR | 3 of 4 seeded bugs posted (the 4th needs a model); on the next push only the new finding, 3 not repeated; a committed recording replayed | [PR #1](https://github.com/vivekdavara/codelens/pull/1) |
 
 ### The eval set
 
@@ -367,7 +371,9 @@ would do better (branch coverage, mutation testing). `tests/test_testgen_sample.
 
 For v1.0.0 every measurement above was re-run: the eval, the quote check (both offsets), the noise and history
 scripts, the test-generation sample (three times) and the stall script, at `b2c401a` (the release branch,
-whose code is `main`'s), then the stall script again at `e9dc23b`. They match the first reports, except:
+whose code is `main`'s), then the stall script again at `e9dc23b`. `scripts/release_check.sh` runs them all
+in order (about four minutes, the test suite included); it prints, and doesn't compare. They match the first
+reports, except:
 
 - **The stall script had stopped measuring.** It reported the old pipe runner returning in 0.1 s with
   capture off, against 30.2 s at day 4. It reuses the sandbox's bootstrap, which a day-4 review fix
