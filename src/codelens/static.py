@@ -32,7 +32,16 @@ from codelens.diff import FileDiff, FileStatus, LineKind, PatchSet, Side
 from codelens.findings import Category, Finding, Severity, anchored
 from codelens.prompts import unsafe_path
 
-__all__ = ["RULES", "Rule", "StaticResult", "analyse", "find_ruff", "old_version", "ruff_codes"]
+__all__ = [
+    "RULES",
+    "Rule",
+    "StaticResult",
+    "analyse",
+    "checked_lines",
+    "find_ruff",
+    "old_version",
+    "ruff_codes",
+]
 
 MAX_FILE_BYTES = 2_000_000
 RUFF_TIMEOUT = 120.0
@@ -410,6 +419,17 @@ def _read(file: FileDiff, root: Path) -> list[str] | str:
     return lines
 
 
+def checked_lines(file: FileDiff, root: Path) -> list[str] | str:
+    """The file's new version, read from the checkout ``root`` and split on ``\\n``, or why it can't be used.
+
+    It can't when it is a symlink, escapes ``root``, is missing, over 2 MB, not UTF-8, has a lone ``\\r``, or
+    differs from the diff on any line the diff shows (a checkout of another commit). Shared by the static
+    pre-pass and the test generator, which both need the file to be exactly the diff's new version.
+    """
+    reason = _skip_reason(file, root)
+    return _read(file, root) if reason is None else reason
+
+
 def _run_ruff(
     ruff: Sequence[str], root: Path, paths: list[str], result: StaticResult
 ) -> dict[int, list[rules.Hit]]:
@@ -597,8 +617,7 @@ def analyse(patch: PatchSet, root: Path, *, ruff: Sequence[str] | None) -> Stati
             continue
         if not file.added_lines():
             continue
-        reason = _skip_reason(file, root)
-        lines = _read(file, root) if reason is None else reason
+        lines = checked_lines(file, root)
         if isinstance(lines, str):
             result.skipped.append((file.path, lines))
         else:
