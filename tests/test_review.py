@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -6,7 +7,15 @@ import pytest
 from codelens.diff import parse_patch
 from codelens.findings import Category, Finding, FindingsFormatError, Severity
 from codelens.prompts import build_prompt
-from codelens.providers import Completion, ProviderError, Request, Usage
+from codelens.providers import (
+    Completion,
+    ProviderError,
+    RecordedProvider,
+    RecordingMissing,
+    Request,
+    Usage,
+)
+from codelens.providers.recorded import write_recording
 from codelens.review import dedupe, review
 from codelens.static import StaticResult
 
@@ -245,3 +254,51 @@ def test_min_severity_applies_after_the_merge() -> None:
     result = review(PATCH, Scripted(answer(item(10, "low", 0.9))), static=pre, min_severity=Severity.MEDIUM)
     assert [(f.line, f.source) for f in result.findings] == [(10, "static")]
     assert result.duplicates == 1 and result.below == 0
+
+
+def test_a_missing_recording_is_an_error_by_default(tmp_path: Path) -> None:
+    with pytest.raises(RecordingMissing):
+        review(PATCH, RecordedProvider(tmp_path), static=StaticResult(findings=[static_finding(4)]))
+
+
+def test_a_missing_recording_can_fall_back_to_static_analysis_alone(tmp_path: Path) -> None:
+    pre = StaticResult(findings=[static_finding(4, "high"), static_finding(10, "low")])
+    result = review(PATCH, RecordedProvider(tmp_path), static=pre, static_if_unrecorded=True)
+    assert [(f.line, f.source) for f in result.findings] == [(4, "static"), (10, "static")]
+    # No model saw anything, and the review says which recording would have answered.
+    assert result.reviewed == [] and result.model == "" and result.usage == Usage()
+    assert result.unrecorded == build_prompt(PATCH, static=pre.findings).request.key()
+    assert result.skipped == [("README.md", "deleted file")] and result.rejections == []
+
+
+def test_a_recording_that_exists_is_replayed_even_with_the_fallback_on(tmp_path: Path) -> None:
+    request = build_prompt(PATCH).request
+    write_recording(tmp_path, request, Completion(answer(item(4)), "hand-written", Usage()), "recorded")
+    result = review(PATCH, RecordedProvider(tmp_path), static_if_unrecorded=True)
+    assert [f.line for f in result.findings] == [4] and result.unrecorded is None
+    assert result.reviewed == ["svc/pay.py"] and result.model == "hand-written"
+
+
+def test_only_a_missing_recording_falls_back(tmp_path: Path) -> None:
+    # An edited recording, or a live provider's failure, is still an error: the review was asked for a
+    # model's answer, and silently posting less would hide that.
+    request = build_prompt(PATCH).request
+    path = write_recording(tmp_path, request, Completion(answer(), "hand-written", Usage()), "recorded")
+    path.write_text(path.read_text().replace('"findings', '"findings '))
+    with pytest.raises(ProviderError, match="does not match its key"):
+        review(PATCH, RecordedProvider(tmp_path), static_if_unrecorded=True)
+
+    class Down:
+        name = "anthropic"
+
+        def complete(self, request: Request) -> Completion:
+            raise ProviderError("HTTP 529: overloaded")
+
+    with pytest.raises(ProviderError, match="overloaded"):
+        review(PATCH, Down(), static_if_unrecorded=True)
+
+
+def test_nothing_reviewable_makes_no_call_and_needs_no_recording(tmp_path: Path) -> None:
+    deleted = parse_patch("diff --git a/README.md" + DIFF.split("diff --git a/README.md", 1)[1])
+    result = review(deleted, RecordedProvider(tmp_path), static_if_unrecorded=True)
+    assert result.unrecorded is None and result.findings == [] and result.reviewed == []

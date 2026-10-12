@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from codelens.diff import PatchSet
 from codelens.findings import Finding, Rejection, Severity, check_response
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
-from codelens.providers import Provider, Usage
+from codelens.providers import Provider, RecordingMissing, Usage
 from codelens.static import StaticResult
 
 __all__ = ["Review", "dedupe", "rank", "review"]
@@ -46,6 +46,9 @@ class Review:
     min_severity: Severity = Severity.LOW
     below: int = 0
     """Findings left out because they are less severe than ``min_severity``."""
+    unrecorded: str | None = None
+    """The key of the recording that would have answered, when the recorded provider had none and the review
+    fell back to static analysis alone (``static_if_unrecorded``); ``None`` otherwise."""
 
     def rejection_counts(self) -> dict[str, int]:
         return dict(sorted(Counter(r.kind for r in self.rejections).items()))
@@ -88,6 +91,7 @@ def review(
     max_findings: int = MAX_FINDINGS,
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
     min_severity: Severity = Severity.LOW,
+    static_if_unrecorded: bool = False,
 ) -> Review:
     """Review ``patch`` with one provider call, adding the static pre-pass's findings if it ran.
 
@@ -97,6 +101,12 @@ def review(
 
     No call is made when no file is reviewable (only deletions, renames or binaries): such PRs cost nothing,
     and static findings, which don't depend on the prompt, are still returned.
+
+    With ``static_if_unrecorded``, a recorded provider that has no answer for this prompt makes the review
+    static analysis alone instead of an error: no model reviewed anything, ``reviewed`` is empty and
+    ``unrecorded`` names the missing recording. This is for running on new pull requests (CodeLens's own,
+    in CI) without a key; only a missing recording falls back, never an edited one or a live provider's
+    failure.
     Raises :class:`~codelens.providers.ProviderError` if the provider fails and
     :class:`~codelens.findings.FindingsFormatError` if its answer is not a findings object at all.
     """
@@ -114,10 +124,16 @@ def review(
     )
     found: list[Finding] = []
     if prompt.files:
-        completion = provider.complete(prompt.request)
-        # Anchor against the files that were shown: a finding on a file the model never saw is a guess.
-        found, result.rejections = check_response(completion.text, PatchSet(prompt.files))
-        result.model, result.usage = completion.model, completion.usage
+        try:
+            completion = provider.complete(prompt.request)
+        except RecordingMissing:
+            if not static_if_unrecorded:
+                raise
+            result.unrecorded, result.reviewed = prompt.request.key(), []
+        else:
+            # Anchor against the files that were shown: a finding on a file the model never saw is a guess.
+            found, result.rejections = check_response(completion.text, PatchSet(prompt.files))
+            result.model, result.usage = completion.model, completion.usage
     merged, result.duplicates = dedupe([*pre, *found])
     kept = [f for f in merged if f.severity.rank <= min_severity.rank]
     result.min_severity, result.below = min_severity, len(merged) - len(kept)

@@ -141,7 +141,12 @@ def summary_body(review: Review, *, details: str | None = None) -> str:
     n = len(review.findings)
     files = len(review.reviewed)
     usage = review.usage
-    if not review.reviewed and review.findings:
+    if review.unrecorded is not None:
+        headline = (
+            f"{plural(n, 'finding')} from static analysis only: no recorded model answer matches this diff "
+            f"(`{review.unrecorded}.json`), so no model reviewed it."
+        )
+    elif not review.reviewed and review.findings:
         headline = (
             f"{plural(n, 'finding')} from static analysis; no file in this diff could be shown to the model."
         )

@@ -205,6 +205,18 @@ def test_summary_when_nothing_was_reviewed() -> None:
     ]
 
 
+def test_summary_of_a_static_only_review_says_no_model_reviewed_it() -> None:
+    static = finding(4, quote="net = 0", title="Unused value")
+    review = a_review(static, reviewed=[], model="", usage=Usage(), provider="recorded", unrecorded="ab12")
+    assert summary_body(review).splitlines()[:3] == [
+        "### CodeLens review",
+        "",
+        "1 finding from static analysis only: no recorded model answer matches this diff (`ab12.json`), so "
+        "no model reviewed it.",
+    ]
+    assert "0 findings from static analysis only" in summary_body(a_review(reviewed=[], unrecorded="ab12"))
+
+
 @pytest.mark.parametrize(
     ("status", "hint"),
     [(401, "missing or invalid"), (403, "pull-requests: write"), (404, "check the repository and PR number")],
