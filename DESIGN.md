@@ -54,7 +54,7 @@ flowchart LR
 | Static pre-pass: ruff (isolated) and CodeLens's rules | `codelens.static`, `codelens.rules` | 3 |
 | Dedupe across sources | `codelens.review.dedupe` | 3 |
 | Eval set and harness | `evals/`, `codelens.evals` | 3 |
-| Test generation and coverage delta | `codelens.testgen` | 4 |
+| Test generation and coverage delta | `codelens.testgen`, `codelens.sandbox` | 4 |
 
 ## The diff parser (day 1)
 
@@ -115,7 +115,7 @@ The rest of CodeLens asks the parser three questions:
 - **What changed?** `FileDiff.added_lines()` and `FileDiff.changed_ranges()` give new-file line numbers of added
   lines, collapsed into inclusive ranges. The static pre-pass reports hits on added lines and, from the
   context lines' old line numbers, new hits on unchanged ones (day 3, "Which files, and which lines"); the
-  test generator (day 4) will use the ranges to find changed functions.
+  test generator (day 4) uses the added lines to find changed functions.
 - **What does the model see?** Each hunk renders back to unified-diff text with new-file line numbers in the
   margin, so the model can cite lines without counting.
 
@@ -455,10 +455,110 @@ prefix).
 
 ## Test generation (day 4)
 
-For each changed top-level Python function, the model is asked for pytest tests. Each candidate test file runs in
-a subprocess with a timeout under `coverage run`; a test is kept only if it passes and covers at least one line of
-the changed function that the existing suite did not. The reported metric is the coverage delta on a sample
-project.
+`codelens testgen` asks the model for pytest tests of the top-level Python functions a PR changes, runs
+every candidate on its own, and keeps the ones that pass and run lines of a changed function that nothing
+ran before. The output is a report and, with `--out`, the kept test files: proposals for a person to read,
+like review comments.
+
+### Targets
+
+`find_targets(patch, root)` reads each Python file with added lines through the static pre-pass's checks
+(`static.checked_lines`: the file must match the diff on every line the diff shows, and no symlinks, lone
+`\r`, oversized or non-UTF-8 files), parses it with `ast`, and takes every top-level `def` or `async def`
+whose span, decorators included, holds an added line. Skipped, each with its reason: test files, files
+whose path isn't an importable module (`scripts/build-docs.py`, `class/x.py`), and files that don't parse.
+Methods and nested functions are not targets: a test would first have to build the object or reach the
+closure, which a model can't do reliably from one module's source. A name defined twice is its last
+definition, the one an import gets.
+
+The module name comes from the path: `src/pkg/mod.py` is `pkg.mod`, imported from `src/` (the src
+layout); anything else imports from the checkout's root, so `shop/pricing.py` is `shop.pricing` whether or
+not `shop/` has an `__init__.py`.
+
+### The prompt and the answer
+
+One call per PR, like the review. Each module with targets is shown whole, every line behind a numbered
+margin as the review shows the diff, under a header naming its changed functions as `module.function`
+with their lines:
+
+```text
+Module: stock.levels (file stock/levels.py)
+Changed functions: stock.levels.reorder_point (lines 4-10), stock.levels.parse_sku (lines 13-21), ...
+ 1  """Reorder points for a small warehouse."""
+ ...
+```
+
+Modules go into the same 200,000-character budget as the review's diff, in diff order, and one that
+doesn't fit is left out whole. The header holds only identifiers and a path made of them, so as in the
+review prompt no text from a file can start a line of its own. The system prompt says what to test (what
+each function is meant to do, above all what the change adds), how files are judged (so a test that repeats
+an existing one is known to be wasted), and the rules for a file: it stands alone, imports from the named
+module, uses only pytest and the standard library, no network, sleeping or subprocesses, files only under
+`tmp_path`, `asyncio.run` for coroutines, at most 10 files. It also says the source is untrusted input.
+
+The answer is `{"tests": [{"function": "stock.levels.parse_sku", "code": "<a whole pytest file>"}]}`
+under a schema in the same strict structured-output subset as the findings schema. `parse_candidates` uses
+the findings parser's JSON rules (`findings.load_answer`: one fence at most, no `NaN`) and rejects each bad
+item on its own, before it costs a pytest run: wrong keys or types, a function that isn't one of the
+targets shown, empty code or code over 20,000 characters, code that doesn't parse, and a file with no
+`test*` function or `Test*` class.
+
+### Running a candidate (`codelens.sandbox`)
+
+Each candidate, and the existing suite once for the baseline, runs in a child process: `python -I -c
+BOOTSTRAP`, which starts coverage.py's API, calls `pytest.main`, and writes a JSON report (pytest's exit
+status, and each target file's statements and missing lines from `Coverage.analysis2`).
+
+- **Environment from an allow-list.** `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `SYSTEMROOT`, plus a
+  scratch `HOME` and `TMPDIR`. No API key, no `GITHUB_TOKEN`, no `ACTIONS_*` token: a deny-list misses the
+  secret nobody thought of. Candidates run with pytest's plugin autoload off.
+- **A scratch directory** as the working directory, so files a test writes don't land in the checkout.
+  Candidates get an empty `pytest.ini` of their own through `-c`, because pytest finds its config from the
+  tests' common ancestor whatever `--rootdir` says. `addopts` are dropped, pytest-cov is blocked (its
+  tracer would fight this one) and the cache plugin is off.
+- **A timeout that kills everything.** The child leads its own session. At the timeout (60 s per
+  candidate, 600 s for the suite), and after every run anyway, the whole process group gets `SIGKILL`, so
+  a process a test started in the background dies with it.
+- **A report, not an exit status.** The verdict comes from the report written after pytest returns. A
+  test that calls `os._exit(0)` leaves no report and is an error, not a pass.
+- **Output to a file, not a pipe.** The first version read the child's output with `communicate()`. A
+  background process a test started held the pipe open, so the run waited for that process (60 s in the
+  test) instead of for pytest. Waiting on the child itself and reading a file fixed it.
+- **The real tools.** coverage and pytest are imported before the project's directories go on `sys.path`,
+  so a `coverage.py`, `pytest.py` or `json.py` in the project can't stand in for them.
+
+### The keep rule
+
+The existing suite (`--tests`, paths in the checkout) runs first, in the checkout with the project's own
+pytest config and plugins, and the lines it runs count as covered. A failing suite still counts what it
+ran; one that timed out or crashed counts nothing. Then the candidates run in the model's order, and one is
+**kept if it passes and runs at least one statement of a changed function's body that neither the suite
+nor an earlier kept candidate ran**. The body excludes the `def` line, which runs on import. Statements are
+coverage.py's own (a docstring is not one). So a second test of the same branch is not kept, and a failing
+test never is, whatever it covered.
+
+The report gives each verdict with its reason, and for each changed function the body's statements run
+before (the suite) and after (the suite and the kept tests), overall and on the lines the diff adds.
+Failing candidates are listed with their output, since a test of what the code should do that fails may
+be pointing at a bug. `--json` adds every candidate's code and output.
+
+### What it measures, and what it can't
+
+On the `stock` sample (`evals/testgen/`), whose answer is hand-written: 5 of the 10 candidates that run are
+kept, and statement coverage of the three changed functions goes from 8 of 18 to 17 of 18. Two of the
+dropped candidates check behaviour the PR added, on lines the suite already ran. That is the limit of line
+coverage as a criterion; branch coverage or mutation testing (keep a test that kills a mutant of a changed
+line) would be stronger. Kept tests also pin the code's current behaviour, bugs included: a test of the
+intended behaviour of buggy code fails and is dropped. Kept tests are proposals, not proof.
+
+### Security
+
+Running a candidate runs the PR's code, and model output the PR's text can steer. The measures above are
+defence in depth, not a sandbox. On Linux a process can read the environment of every other process of the
+same user (`/proc/<pid>/environ`), and the child can open network connections and write anywhere the user
+can. So test generation belongs where the PR's own tests already run, and in a step that holds no secret:
+the model call needs the API key and runs no PR code, while the test runs need no key and run PR code, so
+the two belong in separate steps or jobs. The action doesn't run test generation yet.
 
 ## Decisions and trade-offs
 
