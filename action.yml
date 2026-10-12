@@ -199,11 +199,9 @@ runs:
               --max-findings "${MAX_FINDINGS:-10}" --max-prompt-chars "${MAX_PROMPT_CHARS:-200000}"
               --min-severity "${MIN_SEVERITY:-low}" --missing-recording "${MISSING_RECORDING:-fail}")
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then args+=(--summary-file "$GITHUB_STEP_SUMMARY"); fi
-        if [ "${STATIC:-true}" = "true" ]; then
-          args+=(--source-root "${SOURCE_ROOT:-$GITHUB_WORKSPACE}")
-        else
-          args+=(--no-static)
-        fi
+        # The source root is also where recordings in the diff are found, so it goes in with the pre-pass off.
+        args+=(--source-root "${SOURCE_ROOT:-$GITHUB_WORKSPACE}")
+        if [ "${STATIC:-true}" != "true" ]; then args+=(--no-static); fi
         # Post only a review of the PR's own diff: a diff-file's line numbers are not this PR's. A fork's PR
         # (or one whose fork was deleted) gets a read-only token, so posting would only fail the job.
         if [ "$FROM_PR" = "true" ]; then

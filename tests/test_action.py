@@ -157,3 +157,13 @@ def test_the_review_step_does_not_post_on_a_fork_s_pull_request(tmp_path: Path) 
         tmp_path / "off", PROVIDER="recorded", HEAD_REPO="o/r", POST="false", **pr
     )
     assert "--post" not in outputs["args"] and "not posting" not in done.stdout
+
+
+def test_the_review_step_passes_the_source_root_with_the_pre_pass_off(tmp_path: Path) -> None:
+    # The source root also locates recordings committed to the PR; without it, a checkout in a
+    # subdirectory would review its recordings and never replay one.
+    done, outputs = run_review_step(
+        tmp_path, PROVIDER="recorded", RECORDINGS="head/recs", STATIC="false", SOURCE_ROOT="head"
+    )
+    assert done.returncode == 0, done.stderr
+    assert "--source-root head --no-static" in outputs["args"]
