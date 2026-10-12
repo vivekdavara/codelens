@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import ast
 import keyword
+import tempfile
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,18 +19,24 @@ from typing import Any
 from codelens.diff import FileStatus, PatchSet
 from codelens.findings import FindingsFormatError, Rejection, load_answer
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, LINE_BREAKS, budget_rank
-from codelens.providers import Request
+from codelens.providers import Provider, Request, Usage
+from codelens.sandbox import DEFAULT_TIMEOUT, Outcome, RunResult, run_pytest
 from codelens.static import checked_lines
 
 __all__ = [
     "MAX_TESTS",
     "TESTS_SCHEMA",
     "Candidate",
+    "FunctionCoverage",
     "Target",
     "Targets",
     "TestgenPrompt",
+    "TestgenResult",
+    "Verdict",
     "build_prompt",
     "find_targets",
+    "generate",
+    "kept_files",
     "module_name",
     "parse_candidates",
     "system_prompt",
@@ -315,3 +322,179 @@ def parse_candidates(text: str, targets: Sequence[Target]) -> tuple[list[Candida
         else:
             rejections.append(checked)
     return candidates, rejections
+
+
+SUITE_TIMEOUT = 600.0
+"""Seconds the existing suite may take for the baseline: a whole suite, so far longer than one candidate."""
+
+
+@dataclass
+class Verdict:
+    candidate: Candidate
+    outcome: Outcome
+    kept: bool
+    new_lines: list[tuple[str, int]] = field(default_factory=list)
+    """``(path, line)`` of the changed functions' lines this candidate ran first (empty unless kept)."""
+    output: str = ""
+    seconds: float = 0.0
+
+    @property
+    def reason(self) -> str:
+        if self.kept:
+            n = len(self.new_lines)
+            return f"passes and runs {n} line{'s' if n != 1 else ''} of changed functions nothing else ran"
+        if self.outcome is Outcome.PASSED:
+            return "passes, but runs no line of a changed function that wasn't already run"
+        return {
+            Outcome.FAILED: "fails",
+            Outcome.TIMEOUT: "timed out",
+            Outcome.ERROR: "ended without reporting a result",
+        }[self.outcome]
+
+
+@dataclass(frozen=True)
+class FunctionCoverage:
+    """Statement coverage of one changed function's body, before and after the kept tests."""
+
+    target: Target
+    statements: int
+    before: int
+    """Run by the existing suite."""
+    after: int
+    """Run by the existing suite or a kept test."""
+    changed: int
+    """Statements on lines the pull request added."""
+    changed_before: int
+    changed_after: int
+
+
+@dataclass
+class TestgenResult:
+    targets: list[Target] = field(default_factory=list)
+    """The changed functions shown to the model."""
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    """Files with no target, and modules left out of the prompt, with the reason."""
+    rejections: list[Rejection] = field(default_factory=list)
+    verdicts: list[Verdict] = field(default_factory=list)
+    over_cap: int = 0
+    """Usable candidates beyond ``max_tests``, not run."""
+    coverage: list[FunctionCoverage] = field(default_factory=list)
+    unmeasured: list[Target] = field(default_factory=list)
+    """Targets whose file no run could measure (every run timed out or crashed)."""
+    baseline: RunResult | None = None
+    """The existing suite's run, or ``None`` when no suite was given."""
+    provider: str = ""
+    model: str = ""
+    usage: Usage = field(default_factory=Usage)
+
+    @property
+    def kept(self) -> list[Verdict]:
+        return [v for v in self.verdicts if v.kept]
+
+    def totals(self) -> dict[str, int]:
+        keys = ("statements", "before", "after", "changed", "changed_before", "changed_after")
+        return {k: sum(getattr(c, k) for c in self.coverage) for k in keys}
+
+
+def _body(target: Target, lines: set[int]) -> set[int]:
+    return {n for n in lines if target.body_start <= n <= target.end}
+
+
+def generate(
+    patch: PatchSet,
+    root: Path,
+    provider: Provider,
+    *,
+    tests: Sequence[Path] = (),
+    max_tests: int = MAX_TESTS,
+    timeout: float = DEFAULT_TIMEOUT,
+    suite_timeout: float = SUITE_TIMEOUT,
+    python: str | None = None,
+    max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
+    env: Mapping[str, str] | None = None,
+) -> TestgenResult:
+    """Ask ``provider`` once for tests of the functions ``patch`` changes, run each, keep the useful ones.
+
+    ``tests`` (paths relative to ``root``) is the existing suite: it runs first, in the checkout with the
+    project's own pytest config, and the lines it runs count as covered. Then each candidate runs on its
+    own in a scratch directory, in the order the model gave them; one is kept if it passes and runs at
+    least one line of a changed function's body that neither the suite nor an earlier kept candidate ran.
+    A failing candidate is never kept, whatever it covers.
+
+    No call is made when no function changed. Raises :class:`~codelens.providers.ProviderError` if the
+    provider fails and :class:`~codelens.findings.FindingsFormatError` if its answer is unusable.
+    """
+    if max_tests < 1:
+        raise ValueError("max_tests must be positive")
+    found = find_targets(patch, root)
+    result = TestgenResult(skipped=list(found.skipped), provider=provider.name)
+    if not found.targets:
+        return result
+    prompt = build_prompt(found, max_prompt_chars, max_tests)
+    result.skipped += prompt.skipped
+    result.targets = prompt.targets
+    if not prompt.targets:
+        return result
+    completion = provider.complete(prompt.request)
+    result.model, result.usage = completion.model, completion.usage
+    candidates, result.rejections = parse_candidates(completion.text, prompt.targets)
+    result.over_cap = max(0, len(candidates) - max_tests)
+    root = root.resolve()
+    where = {t.path: str(root / t.path) for t in prompt.targets}
+    include = [Path(p) for p in sorted(set(where.values()))]
+    path = sorted({root / t.import_root for t in prompt.targets})
+    statements: dict[str, set[int]] = {}
+
+    def body_lines(run: RunResult) -> set[tuple[str, int]]:
+        for name, lines in run.statements.items():
+            statements.setdefault(name, lines)
+        return {(t.path, n) for t in prompt.targets for n in _body(t, run.executed.get(where[t.path], set()))}
+
+    before: set[tuple[str, int]] = set()
+    if tests:
+        result.baseline = run_pytest(
+            [root / t for t in tests],
+            include=include,
+            path=path,
+            cwd=root,
+            python=python,
+            timeout=suite_timeout,
+            plugins=True,
+            env=env,
+        )
+        # A failing suite still ran what it ran; one that timed out or crashed reported nothing.
+        before = body_lines(result.baseline)
+    covered = set(before)
+    with tempfile.TemporaryDirectory(prefix="codelens-candidates-") as scratch:
+        for i, candidate in enumerate(candidates[:max_tests]):
+            file = Path(scratch) / f"test_codelens_{i}.py"
+            file.write_text(candidate.code, encoding="utf-8")
+            run = run_pytest([file], include=include, path=path, python=python, timeout=timeout, env=env)
+            ran = body_lines(run)
+            new = sorted(ran - covered) if run.outcome is Outcome.PASSED else []
+            covered.update(new)
+            result.verdicts.append(Verdict(candidate, run.outcome, bool(new), new, run.output, run.seconds))
+    for target in prompt.targets:
+        if where[target.path] not in statements:
+            result.unmeasured.append(target)
+            continue
+        body = _body(target, statements[where[target.path]])
+        changed = body & target.changed
+        had = {n for p, n in before if p == target.path} & body
+        has = {n for p, n in covered if p == target.path} & body
+        result.coverage.append(
+            FunctionCoverage(
+                target, len(body), len(had), len(has), len(changed), len(had & changed), len(has & changed)
+            )
+        )
+    return result
+
+
+def kept_files(result: TestgenResult) -> dict[str, str]:
+    """The kept tests as files to write: ``test_codelens_<module>_<function>_<n>.py`` -> code."""
+    files: dict[str, str] = {}
+    for verdict in result.kept:
+        target = verdict.candidate.target
+        stem = f"test_codelens_{target.module.replace('.', '_')}_{target.name}"
+        files[f"{stem}_{verdict.candidate.index}.py"] = verdict.candidate.code
+    return files
