@@ -27,6 +27,15 @@ jobs:
         run: pytest --cov --cov-report=term-missing
       - name: Eval set (static pre-pass)
         run: codelens eval --static-only | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Test generation sample (hand-written answer)
+        run: |
+          {
+            echo '### Test generation sample (hand-written answer, not model output)'
+            echo '```'
+            codelens testgen evals/testgen/cases/stock/pr.diff --source-root evals/testgen/cases/stock/after \
+              --tests tests --recordings evals/testgen/recordings --timeout 5
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   action:
     # Runs the composite action from this checkout on a fixture diff, so action.yml is tested on every push.
