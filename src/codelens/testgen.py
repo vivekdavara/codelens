@@ -424,6 +424,8 @@ class FunctionCoverage:
 class TestgenResult:
     targets: list[Target] = field(default_factory=list)
     """The changed functions shown to the model."""
+    found: int = 0
+    """Changed functions found, whether or not their module fitted the prompt."""
     skipped: list[tuple[str, str]] = field(default_factory=list)
     """Files with no target, and modules left out of the prompt, with the reason."""
     rejections: list[Rejection] = field(default_factory=list)
@@ -479,7 +481,7 @@ def generate(
     if max_tests < 1:
         raise ValueError("max_tests must be positive")
     found = find_targets(patch, root)
-    result = TestgenResult(skipped=list(found.skipped), provider=provider.name)
+    result = TestgenResult(skipped=list(found.skipped), found=len(found.targets), provider=provider.name)
     if not found.targets:
         return result
     prompt = build_prompt(found, max_prompt_chars, max_tests)

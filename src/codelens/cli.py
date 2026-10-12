@@ -27,7 +27,7 @@ from codelens.github import DEFAULT_AUTHOR, GitHubError, plural, post_review, re
 from codelens.prompts import DEFAULT_MAX_PROMPT_CHARS, MAX_FINDINGS, build_prompt
 from codelens.providers import DEFAULT_RECORDINGS, PROVIDERS, Provider, ProviderError, Recorder, make_provider
 from codelens.review import Review, review
-from codelens.sandbox import DEFAULT_TIMEOUT
+from codelens.sandbox import DEFAULT_TIMEOUT, interpreter
 from codelens.static import StaticResult, analyse, find_ruff
 from codelens.testgen import MAX_TESTS, TestgenResult, describe, generate, kept_files
 
@@ -136,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     tg.add_argument("--recordings", type=Path, help="recordings directory (default: .codelens/recordings)")
     tg.add_argument("--record", action="store_true", help="save the live provider's answer to --recordings")
     tg.add_argument("--max-tests", type=positive_int, default=MAX_TESTS, help="candidates to run, at most")
+    tg.add_argument("--max-prompt-chars", type=positive_int, default=DEFAULT_MAX_PROMPT_CHARS)
     tg.add_argument(
         "--timeout", type=positive_float, default=DEFAULT_TIMEOUT, help="seconds per candidate (default: 60)"
     )
@@ -559,7 +560,9 @@ def print_testgen(result: TestgenResult, out: TextIO) -> None:
         print(f"rejected [{r.index}] {r.kind}: {r.detail}", file=out)
     if result.over_cap:
         print(f"over the cap: {plural(result.over_cap, 'candidate')} not run", file=out)
-    if not result.targets:
+    if not result.targets and result.found:
+        print("no module with a changed function fits the prompt budget (no model call made)", file=out)
+    elif not result.targets:
         print("no changed top-level function to test (no model call made)", file=out)
     else:
         files = len({t.path for t in result.targets})
@@ -602,6 +605,12 @@ def run_testgen(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     patch = read_patch(args.file, err)
     if patch is None:
         return 1
+    if args.python is not None:  # checked before the paid call, not when the first candidate fails to start
+        python = interpreter(args.python)
+        if not (os.path.isfile(python) and os.access(python, os.X_OK)):
+            print(f"codelens: --python {args.python} is not an executable file", file=err)
+            return 2
+        args.python = python
     provider: Provider | None = None
     try:
         recordings = recordings_dir(args)
@@ -624,6 +633,7 @@ def run_testgen(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
             max_tests=args.max_tests,
             timeout=args.timeout,
             python=args.python,
+            max_prompt_chars=args.max_prompt_chars,
         )
     except (ProviderError, FindingsFormatError) as exc:
         print(f"codelens: test generation failed: {exc}", file=err)
@@ -639,10 +649,16 @@ def run_testgen(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     else:
         print_testgen(result, out)
     if args.out is not None and result.kept:
+        files = kept_files(result)
+        # Never over a file already there: it may be an earlier run's test that someone has since edited.
+        if clashes := [name for name in files if (args.out / name).exists()]:
+            print(f"codelens: not overwriting {', '.join(str(args.out / n) for n in clashes)}", file=err)
+            return 1
         try:
             args.out.mkdir(parents=True, exist_ok=True)
-            for name, code in kept_files(result).items():
-                (args.out / name).write_text(code, encoding="utf-8")
+            for name, code in files.items():
+                with (args.out / name).open("x", encoding="utf-8") as fh:
+                    fh.write(code)
                 print(f"wrote {args.out / name}", file=err)
         except OSError as exc:
             print(f"codelens: cannot write the kept tests to {args.out}: {exc}", file=err)

@@ -277,3 +277,41 @@ def test_out_that_cannot_be_written_fails(tmp_path: Path, capsys: pytest.Capture
     ]
     assert main(args) == 1
     assert "cannot write the kept tests" in capsys.readouterr().err
+
+
+def test_a_missing_interpreter_is_refused_before_the_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, diff, _ = setup(tmp_path)
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(tmp_path / "none")]
+    assert main([*args, "--python", "/no/such/python"]) == 2
+    err = capsys.readouterr().err
+    assert "--python /no/such/python is not an executable file" in err and "no recorded response" not in err
+
+
+def test_out_never_overwrites(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, diff, recordings = setup(tmp_path, CAPPED)
+    out = tmp_path / "generated"
+    out.mkdir()
+    edited = out / "test_codelens_school_grades_curve_0.py"
+    edited.write_text("# edited by hand\n")
+    args = [
+        "testgen",
+        str(diff),
+        "--source-root",
+        str(root),
+        "--recordings",
+        str(recordings),
+        "--out",
+        str(out),
+    ]
+    assert main(args) == 1
+    assert "not overwriting" in capsys.readouterr().err and edited.read_text() == "# edited by hand\n"
+
+
+def test_a_prompt_budget_nothing_fits_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, diff, _ = setup(tmp_path)
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(tmp_path / "none")]
+    assert main([*args, "--max-prompt-chars", "10"]) == 0
+    out = capsys.readouterr().out
+    assert "no module with a changed function fits the prompt budget (no model call made)" in out
