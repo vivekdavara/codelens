@@ -163,7 +163,8 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
+        BASE_REPO_ID: ${{ github.event.pull_request.base.repo.id }}
       run: |
         skip() {
           echo "::notice::CodeLens review skipped: $1"
@@ -172,6 +173,12 @@ runs:
           echo "static=0" >> "$GITHUB_OUTPUT"
           exit 0
         }
+        case "${MISSING_RECORDING:-fail}" in
+          fail|static) ;;
+          *)
+            echo "::error::unknown missing-recording '$MISSING_RECORDING' (use fail or static)"
+            exit 1 ;;
+        esac
         [ "$MOVED" != "true" ] || skip "the pull request moved on to a newer commit, which its own run reviews"
         case "${PROVIDER:-recorded}" in
           recorded)
@@ -203,12 +210,13 @@ runs:
         args+=(--source-root "${SOURCE_ROOT:-$GITHUB_WORKSPACE}")
         if [ "${STATIC:-true}" != "true" ]; then args+=(--no-static); fi
         # Post only a review of the PR's own diff: a diff-file's line numbers are not this PR's. A fork's PR
-        # (or one whose fork was deleted) gets a read-only token, so posting would only fail the job.
+        # (or one whose fork was deleted, leaving no head repository) gets a read-only token, so posting would
+        # only fail the job. Repository ids, not names: names change case and get renamed.
         if [ "$FROM_PR" = "true" ]; then
           args+=(--commit "$HEAD_SHA")
           if [ "${POST:-true}" != "true" ]; then
             :
-          elif [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+          elif [ -z "$HEAD_REPO_ID" ] || [ "$HEAD_REPO_ID" != "$BASE_REPO_ID" ]; then
             echo "::notice::CodeLens is not posting: a pull request from a fork gets a read-only token (the review is in the job summary)"
           else
             args+=(--post --pr "$PR_NUMBER")

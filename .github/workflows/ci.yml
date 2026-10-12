@@ -135,13 +135,19 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # The action runs from the merge commit, the commit this workflow file comes from, so its inputs
+      # below always match the action.yml that reads them, however old the PR's branch is.
+      - uses: actions/checkout@v7
+      # The pre-pass reads the PR's own files, and a recording is found where the PR committed it.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}  # the pre-pass reads the PR's own version
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .pr-head
       - id: codelens
         uses: ./
         with:
           provider: ${{ secrets.ANTHROPIC_API_KEY != '' && 'anthropic' || 'recorded' }}
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          recordings: .codelens/recordings
+          source-root: .pr-head
+          recordings: .pr-head/.codelens/recordings
           missing-recording: static

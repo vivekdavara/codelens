@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ACTION = Path(__file__).parent.parent / "action.yml"
 
 
@@ -122,7 +124,8 @@ def test_the_review_step_posts_only_a_review_of_the_prs_own_diff(tmp_path: Path)
         "FROM_PR": "true",
         "PR_NUMBER": "12",
         "HEAD_SHA": "abc123",
-        "HEAD_REPO": "o/r",
+        "HEAD_REPO_ID": "41",
+        "BASE_REPO_ID": "41",
         "RECORDINGS": "recs",
     }
     done, outputs = run_review_step(tmp_path, PROVIDER="recorded", **pr)
@@ -146,17 +149,40 @@ def test_the_review_step_skips_a_moved_pr_and_a_live_provider_without_a_key(tmp_
 
 def test_the_review_step_does_not_post_on_a_fork_s_pull_request(tmp_path: Path) -> None:
     # The fork's PR gets a read-only token: posting would answer 403 and fail the job. A deleted fork
-    # leaves head.repo null, which arrives as "".
+    # leaves head.repo null, so its id arrives as "".
     pr = {"FROM_PR": "true", "PR_NUMBER": "12", "HEAD_SHA": "abc123", "MISSING_RECORDING": "static"}
-    for n, head_repo in enumerate(["someone/r", ""]):
-        done, outputs = run_review_step(tmp_path / str(n), PROVIDER="recorded", HEAD_REPO=head_repo, **pr)
+    for n, head_id in enumerate(["99", ""]):
+        done, outputs = run_review_step(
+            tmp_path / str(n), PROVIDER="recorded", HEAD_REPO_ID=head_id, BASE_REPO_ID="41", **pr
+        )
         assert done.returncode == 0, done.stderr
         assert "not posting: a pull request from a fork" in done.stdout
         assert "--post" not in outputs["args"] and outputs["args"].endswith("--commit abc123")
-    done, outputs = run_review_step(
-        tmp_path / "off", PROVIDER="recorded", HEAD_REPO="o/r", POST="false", **pr
-    )
+    same = {"HEAD_REPO_ID": "41", "BASE_REPO_ID": "41"}
+    done, outputs = run_review_step(tmp_path / "same", PROVIDER="recorded", **same, **pr)
+    assert outputs["args"].endswith("--commit abc123 --post --pr 12")
+    done, outputs = run_review_step(tmp_path / "off", PROVIDER="recorded", POST="false", **same, **pr)
     assert "--post" not in outputs["args"] and "not posting" not in done.stdout
+
+
+def test_the_fork_check_reads_the_repository_ids_from_the_event() -> None:
+    # The step tests set these variables themselves, so they can't catch a typo in the expressions; a
+    # wrong one would silently stop all posting (or never stop it on forks).
+    text = ACTION.read_text()
+    assert "HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}" in text
+    assert "BASE_REPO_ID: ${{ github.event.pull_request.base.repo.id }}" in text
+
+
+@pytest.mark.parametrize("recordings", ["", "recs"])
+def test_an_unknown_missing_recording_value_fails_whatever_else_is_set(
+    tmp_path: Path, recordings: str
+) -> None:
+    # It was a silent skip without recordings and an argparse error with them.
+    done, outputs = run_review_step(
+        tmp_path, PROVIDER="recorded", MISSING_RECORDING="Static", RECORDINGS=recordings
+    )
+    assert done.returncode == 1 and "unknown missing-recording 'Static'" in done.stdout
+    assert "args" not in outputs
 
 
 def test_the_review_step_passes_the_source_root_with_the_pre_pass_off(tmp_path: Path) -> None:
