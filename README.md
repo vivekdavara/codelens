@@ -81,7 +81,8 @@ codelens testgen pr.diff --tests tests  # propose tests for the changed function
 the diff's new version: a file whose lines don't match the diff is skipped and named in the output.
 `--no-static` turns the pre-pass off, and `--min-severity medium` (or `high`, `critical`) leaves out the
 less severe findings after the merge; the model isn't told the threshold, so one recording serves every
-setting. Without the `static` extra (`pip install 'codelens[static]'`, which
+setting. `--missing-recording static` makes a review that no recording answers a static-only review instead
+of an error. Without the `static` extra (`pip install 'codelens[static]'`, which
 pins ruff 0.16.10) only CodeLens's own rules run, and the output says so.
 
 Output on the sample PR in this repo, replayed from its recording
@@ -199,17 +200,19 @@ alone, which is how CodeLens reviews its own pull requests (next section).
 
 Inputs: `provider` (default `recorded`), `api-key`, `model`, `recordings`, `missing-recording` (default
 `fail`; `static` reviews with static analysis alone when no recording answers the diff), `post` (default
-`"true"`),
-`max-findings` (default 10), `max-prompt-chars` (default 200000), `min-severity` (default `low`, keep
-everything; `medium` leaves out the minor ones), `static` (default `"true"`),
-`source-root` (default the workspace), `diff-file`, `github-token`, `python-version`. Outputs: `files`,
-`findings`, `rejected`, `static` (how many of the findings came from the pre-pass), `diff-file`. On
-`pull_request`, `actions/checkout` checks out the merge commit by default; files the base branch also
+`"true"`), `max-findings` (default 10), `max-prompt-chars` (default 200000), `min-severity` (default `low`,
+keep everything; `medium` leaves out the minor ones), `static` (default `"true"`), `source-root` (default the
+workspace), `diff-file`, `github-token`, `python-version`. Outputs: `files`, `findings`, `rejected`,
+`static` (how many of the findings came from the pre-pass), `diff-file`.
+
+On `pull_request`, `actions/checkout` checks out the merge commit by default; files the base branch also
 changed then differ from the PR's diff and are skipped by the pre-pass, hence the `ref` above. The review
-always goes to the job summary. On a fork's PR there are no secrets, so the review is skipped with a notice
-rather than failing the job; the same happens for the recorded provider without `recordings`. Only a review
-of the PR's own diff is ever posted (never of a `diff-file`), pinned to the event's head commit; if a newer
-push has landed by the time the diff is fetched, the review is skipped and that push's run reviews it.
+always goes to the job summary. When there is nothing to review with, the review is skipped with a notice
+rather than failing the job: a live provider without `api-key` (a fork's PR gets no secrets), or the recorded
+provider without `recordings` unless `missing-recording` is `static`. On a fork's PR the action doesn't post,
+because the job's token is read-only there; the review stays in the job summary. Only a review of the PR's
+own diff is ever posted (never of a `diff-file`), pinned to the event's head commit; if a newer push has
+landed by the time the diff is fetched, the review is skipped and that push's run reviews it.
 
 ## CodeLens reviews its own pull requests
 
