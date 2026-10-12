@@ -246,9 +246,10 @@ collaborators, and a model guessing a constructor from one module's source mostl
 setup. Top-level functions are where generated tests pass often enough to be worth the runs. Methods are the
 obvious next step (DESIGN.md, "Targets").
 
-**How do you decide a test is worth keeping?** It must pass, and it must run at least one statement of a
-changed function's body that neither the existing suite nor an earlier kept test ran (`generate`, the
-`covered` set). Statements are coverage.py's own (`Coverage.analysis2`), the `def` line is excluded because
+**How do you decide a test is worth keeping?** It must pass cleanly (at least one test passed, and none
+failed, skipped, xfailed or xpassed: exit status 0 alone also means "expected failure"), and it must run at
+least one statement of a changed function's body that neither the existing suite nor an earlier kept test
+ran (`generate`, the `covered` set). Statements are coverage.py's own (`Coverage.analysis2`), the `def` line is excluded because
 it runs on import, and candidates are judged in the model's order, so of two tests of the same branch the
 first is kept. A failing test is never kept, whatever it covered.
 
@@ -307,7 +308,7 @@ the model wasn't shown are rejected.
 
 ## Testing
 
-**How is it tested?** 620 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
+**How is it tested?** 648 tests, 99% line and branch coverage (`.venv/bin/pytest --cov`). Besides unit tests:
 the git differential test (day 1); a scripted local HTTP server standing in for the vendors and GitHub
 (`tests/conftest.py`), so retries, timeouts and refused redirects go over real sockets; seeded fuzz tests
 (`tests/test_fuzz.py`) that feed random and mutated JSON to every parser of untrusted input (they found
@@ -338,6 +339,13 @@ plant a fingerprint marker, and a lone `\r` shifted static findings by a line. A
 tests found two more: `old_version` checked against real git on 120 random edits got the old file's final
 newline wrong when a PR changed it (`tests/test_old_version.py`), and fuzzing the rules with mutated code
 showed `ast.parse` printing the PR's SyntaxWarnings into CodeLens's output (`tests/test_static_fuzz.py`).
+
+On day 4, two agents reviewed the runner and the generator, and 17 reproduced problems were fixed, each
+with a test that fails on the old code. The one I'd tell first: exit status 0 counted as a pass, but pytest
+also exits 0 for an expected failure (xfail) or a test that skips itself after running code, so the
+generator kept tests whose assertions had failed. A plugin in the child now counts each test's outcome.
+The other good one: candidates shared a directory, so one candidate could write a `conftest.py` that made
+the next one's failures pass. Each run now gets a fresh directory and `--noconftest`.
 
 ## What's not done yet
 

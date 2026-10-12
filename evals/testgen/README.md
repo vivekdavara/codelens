@@ -40,7 +40,7 @@ numbers measure CodeLens's filtering and accounting, not a model's test writing:
 
 Measured (`.venv/bin/codelens testgen evals/testgen/cases/stock/pr.diff --source-root
 evals/testgen/cases/stock/after --tests tests --recordings evals/testgen/recordings --timeout 5`, Apple M3,
-7.0 s wall time, 5 s of it the timed-out candidate):
+7.4 s wall time, median of 3 runs, 5 s of it the timed-out candidate):
 
 - 5 of the 10 candidates that ran were kept.
 - Statement coverage of the three changed functions' bodies went from 8 of 18 (the existing suite) to 17 of

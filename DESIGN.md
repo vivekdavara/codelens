@@ -465,15 +465,25 @@ like review comments.
 `find_targets(patch, root)` reads each Python file with added lines through the static pre-pass's checks
 (`static.checked_lines`: the file must match the diff on every line the diff shows, and no symlinks, lone
 `\r`, oversized or non-UTF-8 files), parses it with `ast`, and takes every top-level `def` or `async def`
-whose span, decorators included, holds an added line. Skipped, each with its reason: test files, files
-whose path isn't an importable module (`scripts/build-docs.py`, `class/x.py`), and files that don't parse.
+whose span, decorators included, holds an added line (a byte-order mark is dropped first, as Python does
+on import). Skipped, each with its reason: test files (the prompt ranking's test rules, plus `test.py`,
+`tests.py` and `conftest.py`), files whose path isn't an importable module (`scripts/build-docs.py`,
+`class/x.py`), files that don't parse, functions named `test*` (pytest collects a `test*` function a test
+file imports, as a test of its own), and functions whose body starts on a line of the `def` itself
+(`def f(x): return x + 1`): the import runs that line, so coverage can't tell a call from the import.
 Methods and nested functions are not targets: a test would first have to build the object or reach the
 closure, which a model can't do reliably from one module's source. A name defined twice is its last
 definition, the one an import gets.
 
+A target's changed statements are the first lines of the body statements that hold an added line (the
+innermost one, by `ast` spans), because coverage reports a statement by its first line: an edit to the
+third line of a multi-line `return sum(...)` is a change to that `return`. Added blank lines and comments
+change no statement.
+
 The module name comes from the path: `src/pkg/mod.py` is `pkg.mod`, imported from `src/` (the src
-layout); anything else imports from the checkout's root, so `shop/pricing.py` is `shop.pricing` whether or
-not `shop/` has an `__init__.py`.
+layout), unless `src/__init__.py` exists, when `src` is a package and `src/utils.py` is `src.utils`;
+anything else imports from the checkout's root, so `shop/pricing.py` is `shop.pricing` whether or not
+`shop/` has an `__init__.py`.
 
 ### The prompt and the answer
 
@@ -505,22 +515,39 @@ targets shown, empty code or code over 20,000 characters, code that doesn't pars
 
 ### Running a candidate (`codelens.sandbox`)
 
-Each candidate, and the existing suite once for the baseline, runs in a child process: `python -I -c
-BOOTSTRAP`, which starts coverage.py's API, calls `pytest.main`, and writes a JSON report (pytest's exit
-status, and each target file's statements and missing lines from `Coverage.analysis2`).
+Each candidate, and the existing suite once for the baseline, runs in a child process: `python -I -B -X
+utf8 -c BOOTSTRAP`, which starts coverage.py's API, calls `pytest.main` with a small plugin that counts how
+each test ended, writes a JSON report (pytest's exit status, the counts, and each target file's statements
+and missing lines from `Coverage.analysis2`), and then ends the process at once. POSIX only: the runner
+relies on process groups.
 
-- **Environment from an allow-list.** `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `SYSTEMROOT`, plus a
-  scratch `HOME` and `TMPDIR`. No API key, no `GITHUB_TOKEN`, no `ACTIONS_*` token: a deny-list misses the
-  secret nobody thought of. Candidates run with pytest's plugin autoload off.
-- **A scratch directory** as the working directory, so files a test writes don't land in the checkout.
-  Candidates get an empty `pytest.ini` of their own through `-c`, because pytest finds its config from the
-  tests' common ancestor whatever `--rootdir` says. `addopts` are dropped, pytest-cov is blocked (its
-  tracer would fight this one) and the cache plugin is off.
+- **Environment from an allow-list.** `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, plus a scratch `HOME`
+  and `TMPDIR`. No API key, no `GITHUB_TOKEN`, no `ACTIONS_*` token: a deny-list misses the secret nobody
+  thought of. Candidates run with pytest's plugin autoload off. (`PYTHON*` variables would be ignored
+  anyway under `-I`, which is why UTF-8 mode is `-X utf8` on the command line, and `-B` keeps bytecode out
+  of the checkout.)
+- **A fresh directory per run.** A candidate is copied into a new temporary directory, which is its
+  working directory, `HOME` and `TMPDIR`, so files it writes don't land in the checkout and nothing one run
+  leaves behind reaches the next. It gets an empty `pytest.ini` of its own through `-c` (pytest finds its
+  config from the tests' common ancestor, whatever `--rootdir` says) and `--noconftest`. A review found
+  why both matter: with all candidates in one directory, a `conftest.py` one candidate wrote turned the
+  next one's failure into a pass. `addopts` are dropped, pytest-cov is blocked (its tracer would fight this
+  one) and the cache plugin is off. The runner's own files (instructions, report, output) live in another
+  directory, so a test that tidies its temporary directory can't delete them.
 - **A timeout that kills everything.** The child leads its own session. At the timeout (60 s per
-  candidate, 600 s for the suite), and after every run anyway, the whole process group gets `SIGKILL`, so
-  a process a test started in the background dies with it.
-- **A report, not an exit status.** The verdict comes from the report written after pytest returns. A
-  test that calls `os._exit(0)` leaves no report and is an error, not a pass.
+  candidate, 600 s for the suite), after every run, and on an interrupt (Ctrl-C never reaches a child in
+  its own session), the whole process group gets `SIGKILL`, so a process a test started in the background
+  dies with it. The bootstrap ends its process as soon as the report is written: a thread or `atexit` hook
+  a test left behind once kept a passing run alive until the timeout, and threw its report away.
+- **A clean pass, from a report.** The verdict comes from the report, never the exit status. A test that
+  calls `os._exit(0)` leaves no report and is an error. Exit status 0 is not enough either: it also means
+  "every test skipped", "failed as expected" (xfail) or `pytest.exit(returncode=0)`. A run passes only if
+  at least one test passed and none failed, errored, skipped, xfailed or xpassed.
+- **The interpreter**, `--python` or CodeLens's own, is made absolute before the child starts in another
+  directory (without resolving symlinks, which would turn a virtualenv's `bin/python` into the base
+  interpreter); one that can't start is an error result, never an exception after the paid model call.
+  Coverage measures the target files' directories, not the files as `include` patterns, which coverage
+  reads as globs (a checkout under `repo[1]` measured nothing).
 - **Output to a file, not a pipe.** The runner waits for the child to exit, then reads its output from a
   file. The first version read a pipe to its end with `communicate()`, which lets a test stall the run: a
   test that turns pytest's capture off (`capsys.disabled()`) and starts a background process hands it the
@@ -536,8 +563,8 @@ status, and each target file's statements and missing lines from `Coverage.analy
 The existing suite (`--tests`, paths in the checkout) runs first, in the checkout with the project's own
 pytest config and plugins, and the lines it runs count as covered. A failing suite still counts what it
 ran; one that timed out or crashed counts nothing. Then the candidates run in the model's order, and one is
-**kept if it passes and runs at least one statement of a changed function's body that neither the suite
-nor an earlier kept candidate ran**. The body excludes the `def` line, which runs on import. Statements are
+**kept if it passes cleanly and runs at least one statement of a changed function's body that neither the
+suite nor an earlier kept candidate ran**. The body excludes the `def` line, which runs on import. Statements are
 coverage.py's own (a docstring is not one). So a second test of the same branch is not kept, and a failing
 test never is, whatever it covered.
 

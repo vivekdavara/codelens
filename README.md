@@ -110,7 +110,7 @@ tests from recorded: hand-written, 0 input / 0 output tokens
   stock.levels.units_to_order: statements run 0 of 6 before, 5 of 6 after
 coverage of the changed functions: 8 of 18 statements before, 17 of 18 after (+50.0 points)
   of them on lines the diff adds: 7 of 17 before, 16 of 17 after
-existing suite: passed
+existing suite: passed (2 passed)
 ```
 
 Generated tests run the PR's code, so run `testgen` where the PR's own tests already run, in a step with
@@ -203,13 +203,35 @@ model.
 | Candidates kept | 5 of the 10 that ran; 2 more rejected before running | `.venv/bin/codelens testgen evals/testgen/cases/stock/pr.diff --source-root evals/testgen/cases/stock/after --tests tests --recordings evals/testgen/recordings --timeout 5` |
 | Coverage of the changed functions' bodies | 8 of 18 statements (the existing suite) → 17 of 18 (+50.0 points) | same |
 | Of those, on lines the diff adds | 7 of 17 → 16 of 17 | same |
-| Time | 7.0 s wall time on an Apple M3, 5 s of it the candidate that sleeps until its timeout | same, under `time` |
+| Time | 7.4 s wall time (median of 3) on an Apple M3, 5 s of it the candidate that sleeps until its timeout | same, under `time` |
 | A test that leaves a 30 s background process | 0.29 s, the process killed with the run; 30.2 s for the first version, which read the output through a pipe (when the test turns pytest's capture off; with capture on, 0.2 s either way) | `.venv/bin/python scripts/measure_runner_stall.py` |
 
 Two of the dropped candidates check behaviour the PR added, but on lines the existing suite already ran, so
 line coverage can't tell them from a repeat. Kept tests also pin current behaviour: a test of what buggy
 code should do fails and is dropped. Both are in DESIGN.md's "What it measures, and what it can't", with what
 would do better (branch coverage, mutation testing). `tests/test_testgen_sample.py` pins the numbers.
+
+### Review of the day's work (day 4)
+
+Two review agents read the day's code, one the runner (`sandbox.py`) and one the generator and CLI, and
+reported only what they had reproduced. I reproduced the main claims again before fixing them, and every fix
+has a test that fails on the old code. 17 problems were fixed, the worst first:
+
+- **False passes.** pytest's exit status 0 also means "failed as expected" (xfail), "skipped after running
+  code" and `pytest.exit(returncode=0)`, and the generator kept such tests. A run now passes only if a test
+  passed and none skipped, xfailed, xpassed, failed or errored (counted by a plugin in the child).
+- **Candidates could change each other's verdicts.** They shared a directory, so a `conftest.py` written
+  by one turned the next one's failure into a pass. Each run now gets its own copy and `--noconftest`.
+- **A passing run reported as a timeout**, when a test left a thread running: the child now exits as soon
+  as its report is written.
+- **Crashes after the paid call**: a relative or missing `--python`, and a symlink loop in the checkout,
+  which crashed the day-3 static pre-pass too (`codelens review`).
+- **Wrong coverage accounting**: one-line functions counted as covered by the import, and an edit inside
+  a multi-line statement counted as no changed statement.
+- And: an interrupt left the child running, UTF-8 mode never took effect under `-I`, bytecode landed in
+  the checkout, a checkout path with `[` measured nothing, `src/` as a package got the wrong module name,
+  `tests.py`, `conftest.py` and `test*` functions were targets, a byte-order mark made a file "not parse",
+  and `--out` overwrote files.
 
 ### The eval set (day 3)
 
@@ -302,7 +324,7 @@ update except one whose only keys are the loop's own (`for k in d: d.update({k: 
 
 | What | Result | Reproduce |
 |---|---|---|
-| Tests | 620 passing | `.venv/bin/pytest` |
+| Tests | 648 passing | `.venv/bin/pytest` |
 | Pre-pass property tests (day 3) | 120 seeded edits diffed by real git at `-U0`, `-U1` and `-U3`: `old_version` rebuilds every old file exactly (it found one end-of-file case, fixed); 2,000 seeded mutations of real code never crash the CodeLens rules; on random edits every static finding sits on a shown line and quotes it | `.venv/bin/pytest tests/test_old_version.py tests/test_static_fuzz.py` |
 | Line + branch coverage | 99% overall: every module 100% except the day-1 parser, `diff.py`, at 98% | `.venv/bin/pytest --cov` |
 | Quote check on near-miss citations | rejects 16,738 of 17,366 (96.4%) off-by-one/two citations that land inside a hunk, where line anchoring alone would accept them; 0 correct citations rejected | `.venv/bin/python scripts/measure_quote_check.py` |

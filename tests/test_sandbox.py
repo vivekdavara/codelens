@@ -298,3 +298,16 @@ def test_interpreter_paths_are_absolute() -> None:
     assert interpreter("python3") == shutil.which("python3")
     assert interpreter("no-such-python-anywhere") == "no-such-python-anywhere"  # Popen then fails: an ERROR
     assert interpreter("venv/bin/python") == os.path.join(os.getcwd(), "venv", "bin", "python")
+
+
+def test_a_test_that_empties_its_temporary_directory_cannot_lose_the_report(tmp_path: Path) -> None:
+    test = (
+        "import os, tempfile\n\ndef test_a():\n"
+        "    for name in os.listdir(tempfile.gettempdir()):\n"
+        "        path = os.path.join(tempfile.gettempdir(), name)\n"
+        "        if os.path.isfile(path):\n"
+        "            os.remove(path)\n"
+    )
+    result, _ = run(tmp_path, test)
+    assert result.outcome is Outcome.PASSED, result.output
+    assert "1 passed" in result.output
