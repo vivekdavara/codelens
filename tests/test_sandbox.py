@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -288,3 +289,12 @@ def test_an_interrupt_kills_the_child(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_a_checkout_path_with_glob_characters_is_measured(tmp_path: Path) -> None:
     result, module = run(tmp_path / "repo[1]", f"{IMPORT}def test_a():\n    assert grade(95) == 'A'\n")
     assert result.outcome is Outcome.PASSED and result.executed[module] == {1, 2, 3}
+
+
+def test_interpreter_paths_are_absolute() -> None:
+    from codelens.sandbox import interpreter
+
+    assert interpreter(None) == os.path.abspath(sys.executable)
+    assert interpreter("python3") == shutil.which("python3")
+    assert interpreter("no-such-python-anywhere") == "no-such-python-anywhere"  # Popen then fails: an ERROR
+    assert interpreter("venv/bin/python") == os.path.join(os.getcwd(), "venv", "bin", "python")

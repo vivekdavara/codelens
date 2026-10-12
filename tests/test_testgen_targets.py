@@ -190,3 +190,15 @@ def test_a_symlink_loop_in_the_checkout_is_skipped(tmp_path: Path) -> None:
     diff = "diff --git a/pkg/mod.py b/pkg/mod.py\nnew file mode 100644\n--- /dev/null\n+++ b/pkg/mod.py\n"
     found = find_targets(parse_patch(diff + "@@ -0,0 +1,2 @@\n+def f():\n+    return 1\n"), tmp_path)
     assert found.targets == [] and found.skipped == [("pkg/mod.py", "symlink")]
+
+
+def test_an_added_comment_or_blank_line_is_no_changed_statement(tmp_path: Path) -> None:
+    before = "def f(x):\n    y = x\n    return y\n"
+    after = "def f(x):\n    y = x\n    # a note\n\n    return y\n"
+    (target,) = find_targets(make_pr(tmp_path, {"m.py": before}, {"m.py": after}), tmp_path).targets
+    assert target.changed == frozenset()  # still a target: the PR touched it, even if no statement changed
+
+
+def test_a_file_whose_only_change_was_skipped_says_so_once(tmp_path: Path) -> None:
+    found = find_targets(make_pr(tmp_path, {}, {"m.py": "def f(x): return x\n"}), tmp_path)
+    assert found.skipped == [("m.py", "f: its body is on the def line, which import runs")]

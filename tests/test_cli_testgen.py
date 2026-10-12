@@ -1,6 +1,7 @@
 """`codelens testgen` end to end: a real diff file, a hand-written recording, real pytest runs."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -315,3 +316,12 @@ def test_a_prompt_budget_nothing_fits_says_so(tmp_path: Path, capsys: pytest.Cap
     assert main([*args, "--max-prompt-chars", "10"]) == 0
     out = capsys.readouterr().out
     assert "no module with a changed function fits the prompt budget (no model call made)" in out
+
+
+def test_python_runs_the_tests_with_that_interpreter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, diff, recordings = setup(tmp_path, CAPPED)
+    args = ["testgen", str(diff), "--source-root", str(root), "--recordings", str(recordings)]
+    assert main([*args, "--python", sys.executable]) == 0
+    assert capsys.readouterr().out.startswith("kept    [0] school.grades.curve")

@@ -379,15 +379,12 @@ def _skip_reason(file: FileDiff, root: Path) -> str | None:
     try:
         if full.is_symlink() or not full.resolve().is_relative_to(root.resolve()):
             return "symlink"
-    except RuntimeError:  # Python 3.11's resolve() on a symlink loop (`pkg -> pkg`, the diff naming pkg/x.py)
-        return "symlink"
-    except OSError as exc:
-        return f"unreadable: {exc.strerror or exc}"
-    try:
         if not full.is_file():
             return f"not found in {root}"
         if full.stat().st_size > MAX_FILE_BYTES:
             return f"over {MAX_FILE_BYTES:,} bytes"
+    except RuntimeError:  # Python 3.11's resolve() on a symlink loop (`pkg -> pkg`, the diff naming pkg/x.py)
+        return "symlink"
     except OSError as exc:
         return f"unreadable: {exc.strerror or exc}"
     return None
